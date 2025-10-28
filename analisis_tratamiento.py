@@ -157,6 +157,12 @@ def get_download_link(file_path, file_label, file_type):
         elif file_type == 'parquet':
             mime_type = 'application/octet-stream'
             ext = 'parquet'
+        elif file_type == 'png':
+            mime_type = 'image/png'
+            ext = 'png'
+        elif file_type == 'html':
+            mime_type = 'text/html'
+            ext = 'html'
         else:
             mime_type = 'text/plain'
             ext = 'txt'
@@ -165,6 +171,20 @@ def get_download_link(file_path, file_label, file_type):
         return href
     except Exception as e:
         return f'<p style="color: red;">Error al generar enlace: {str(e)}</p>'
+
+def guardar_visualizacion(fig, nombre, formato='png'):
+    """Guarda visualización en formato especificado"""
+    try:
+        if formato == 'png':
+            path = os.path.join(tempfile.gettempdir(), f'{nombre}.png')
+            fig.write_image(path)
+        elif formato == 'html':
+            path = os.path.join(tempfile.gettempdir(), f'{nombre}.html')
+            fig.write_html(path)
+        return path
+    except Exception as e:
+        st.error(f"Error al guardar visualización: {str(e)}")
+        return None
 
 # --- INTERFAZ PRINCIPAL ---
 
@@ -183,6 +203,8 @@ def main():
         st.session_state.transformaciones = []
     if 'tratamiento_aplicado' not in st.session_state:
         st.session_state.tratamiento_aplicado = False
+    if 'visualizaciones_generadas' not in st.session_state:
+        st.session_state.visualizaciones_generadas = []
     
     # Barra de progreso
     col_prog1, col_prog2, col_prog3, col_prog4 = st.columns(4)
@@ -238,6 +260,7 @@ def main():
                     st.session_state.df_original = df.copy()
                     st.session_state.df_procesado = df.copy()
                     st.session_state.transformaciones = []
+                    st.session_state.visualizaciones_generadas = []
                     
                     st.success(f"✅ Archivo cargado: {uploaded_file.name}")
                     st.info(f"📊 Dimensiones: {df.shape[0]} filas × {df.shape[1]} columnas")
@@ -265,7 +288,7 @@ def main():
     
     # ETAPA 2: TRATAMIENTO DE DATOS
     elif st.session_state.etapa_actual == 2:
-        st.header("🛠️ Paso 2: Tratamiento Automático de Datos")
+        st.header("🛠️ Paso 2: Tratamiento de Datos")
         
         if st.session_state.df_original is not None:
             df_original = st.session_state.df_original
@@ -296,6 +319,43 @@ def main():
                     st.session_state.df_procesado = df_tratado
                     st.session_state.transformaciones = transformaciones
                     st.session_state.tratamiento_aplicado = True
+            
+            # OPCIONES AVANZADAS DE TRATAMIENTO
+            st.subheader("⚙️ Opciones Avanzadas de Tratamiento")
+            
+            col_adv1, col_adv2 = st.columns(2)
+            
+            with col_adv1:
+                st.write("**Eliminar Columnas**")
+                columnas_a_eliminar = st.multiselect(
+                    "Selecciona columnas para eliminar:",
+                    options=st.session_state.df_procesado.columns.tolist(),
+                    help="Las columnas seleccionadas serán eliminadas del dataset"
+                )
+                
+                if st.button("🗑️ Eliminar Columnas Seleccionadas", key="eliminar_columnas_btn"):
+                    if columnas_a_eliminar:
+                        df_actual = st.session_state.df_procesado.copy()
+                        df_reducido = df_actual.drop(columns=columnas_a_eliminar)
+                        st.session_state.df_procesado = df_reducido
+                        st.session_state.transformaciones.append(f"Columnas eliminadas: {', '.join(columnas_a_eliminar)}")
+                        st.success(f"✅ Columnas eliminadas: {', '.join(columnas_a_eliminar)}")
+                        st.rerun()
+                    else:
+                        st.warning("⚠️ Selecciona al menos una columna para eliminar")
+            
+            with col_adv2:
+                st.write("**Eliminar Filas Duplicadas**")
+                if st.button("🔍 Eliminar Filas Duplicadas", key="eliminar_duplicados_btn"):
+                    df_actual = st.session_state.df_procesado.copy()
+                    filas_antes = len(df_actual)
+                    df_sin_duplicados = df_actual.drop_duplicates()
+                    filas_despues = len(df_sin_duplicados)
+                    
+                    st.session_state.df_procesado = df_sin_duplicados
+                    st.session_state.transformaciones.append(f"Eliminadas {filas_antes - filas_despues} filas duplicadas")
+                    st.success(f"✅ Se eliminaron {filas_antes - filas_despues} filas duplicadas")
+                    st.rerun()
             
             # Mostrar resultados del tratamiento
             st.subheader("✅ Tratamiento Aplicado")
@@ -349,7 +409,7 @@ def main():
             df = st.session_state.df_procesado
             
             # Pestañas de análisis
-            tab1, tab2, tab3 = st.tabs(["🔍 Calidad de Datos", "📈 Visualización", "📄 Reportes"])
+            tab1, tab2, tab3 = st.tabs(["🔍 Calidad de Datos", "📈 Visualización Avanzada", "📄 Reportes"])
             
             with tab1:
                 st.subheader("Análisis de Calidad de Datos")
@@ -375,34 +435,111 @@ def main():
                 st.dataframe(tipos_datos, use_container_width=True)
             
             with tab2:
-                st.subheader("Visualización de Datos")
+                st.subheader("📊 Visualización Avanzada")
                 
                 if not df.empty:
+                    # Selección de tipo de gráfico
                     col_viz1, col_viz2 = st.columns(2)
                     
                     with col_viz1:
-                        # Histograma para columnas numéricas
-                        columnas_numericas = df.select_dtypes(include=[np.number]).columns.tolist()
-                        if columnas_numericas:
-                            columna_hist = st.selectbox("Selecciona columna para histograma:", columnas_numericas)
-                            if columna_hist:
-                                fig_hist = px.histogram(df, x=columna_hist, title=f"Distribución de {columna_hist}")
-                                st.plotly_chart(fig_hist, use_container_width=True)
+                        tipo_grafico = st.selectbox(
+                            "Tipo de gráfico:",
+                            ["Barras", "Dispersión", "Líneas", "Histograma", "Boxplot", "Heatmap", "Torta"]
+                        )
                     
                     with col_viz2:
-                        # Gráfico de barras para categóricas
-                        columnas_categoricas = df.select_dtypes(include=['object']).columns.tolist()
-                        if columnas_categoricas:
-                            columna_bar = st.selectbox("Selecciona columna para gráfico de barras:", columnas_categoricas)
-                            if columna_bar:
-                                conteo_valores = df[columna_bar].value_counts().head(10)
-                                fig_bar = px.bar(
-                                    x=conteo_valores.index, 
-                                    y=conteo_valores.values,
-                                    title=f"Top 10 Valores en {columna_bar}",
-                                    labels={'x': columna_bar, 'y': 'Frecuencia'}
-                                )
-                                st.plotly_chart(fig_bar, use_container_width=True)
+                        # Opciones de descarga
+                        formato_descarga = st.multiselect(
+                            "Formatos de descarga:",
+                            ["PNG", "HTML"],
+                            default=["PNG"]
+                        )
+                    
+                    # Configuración del gráfico según tipo
+                    if tipo_grafico == "Barras":
+                        col_conf1, col_conf2 = st.columns(2)
+                        with col_conf1:
+                            eje_x = st.selectbox("Eje X:", df.columns.tolist())
+                        with col_conf2:
+                            eje_y = st.selectbox("Eje Y:", df.select_dtypes(include=[np.number]).columns.tolist())
+                        
+                        color_col = st.selectbox("Color (opcional):", [None] + df.columns.tolist())
+                        
+                        if st.button("Generar Gráfico de Barras"):
+                            fig = px.bar(df, x=eje_x, y=eje_y, color=color_col, title=f"{eje_y} por {eje_x}")
+                            st.plotly_chart(fig, use_container_width=True)
+                            
+                            # Descarga
+                            if formato_descarga:
+                                nombre_grafico = f"barras_{eje_x}_{eje_y}"
+                                for formato in formato_descarga:
+                                    if formato == "PNG":
+                                        path = guardar_visualizacion(fig, nombre_grafico, 'png')
+                                        if path:
+                                            st.markdown(get_download_link(path, f"Descargar {nombre_grafico}.png", "png"), unsafe_allow_html=True)
+                                            st.session_state.visualizaciones_generadas.append(f"Gráfico de barras: {nombre_grafico}.png")
+                                    elif formato == "HTML":
+                                        path = guardar_visualizacion(fig, nombre_grafico, 'html')
+                                        if path:
+                                            st.markdown(get_download_link(path, f"Descargar {nombre_grafico}.html", "html"), unsafe_allow_html=True)
+                                            st.session_state.visualizaciones_generadas.append(f"Gráfico de barras: {nombre_grafico}.html")
+                    
+                    elif tipo_grafico == "Dispersión":
+                        col_conf1, col_conf2 = st.columns(2)
+                        with col_conf1:
+                            eje_x = st.selectbox("Eje X:", df.select_dtypes(include=[np.number]).columns.tolist())
+                        with col_conf2:
+                            eje_y = st.selectbox("Eje Y:", df.select_dtypes(include=[np.number]).columns.tolist())
+                        
+                        color_col = st.selectbox("Color (opcional):", [None] + df.columns.tolist())
+                        size_col = st.selectbox("Tamaño (opcional):", [None] + df.select_dtypes(include=[np.number]).columns.tolist())
+                        
+                        if st.button("Generar Gráfico de Dispersión"):
+                            fig = px.scatter(df, x=eje_x, y=eje_y, color=color_col, size=size_col, 
+                                           title=f"Dispersión: {eje_y} vs {eje_x}")
+                            st.plotly_chart(fig, use_container_width=True)
+                            
+                            if formato_descarga:
+                                nombre_grafico = f"dispersion_{eje_x}_{eje_y}"
+                                for formato in formato_descarga:
+                                    if formato == "PNG":
+                                        path = guardar_visualizacion(fig, nombre_grafico, 'png')
+                                        if path:
+                                            st.markdown(get_download_link(path, f"Descargar {nombre_grafico}.png", "png"), unsafe_allow_html=True)
+                                            st.session_state.visualizaciones_generadas.append(f"Gráfico de dispersión: {nombre_grafico}.png")
+                                    elif formato == "HTML":
+                                        path = guardar_visualizacion(fig, nombre_grafico, 'html')
+                                        if path:
+                                            st.markdown(get_download_link(path, f"Descargar {nombre_grafico}.html", "html"), unsafe_allow_html=True)
+                                            st.session_state.visualizaciones_generadas.append(f"Gráfico de dispersión: {nombre_grafico}.html")
+                    
+                    elif tipo_grafico == "Heatmap":
+                        columnas_numericas = df.select_dtypes(include=[np.number]).columns.tolist()
+                        if len(columnas_numericas) > 1:
+                            fig = px.imshow(
+                                df[columnas_numericas].corr(),
+                                title="Matriz de Correlación",
+                                aspect="auto"
+                            )
+                            st.plotly_chart(fig, use_container_width=True)
+                            
+                            if formato_descarga:
+                                nombre_grafico = "heatmap_correlacion"
+                                for formato in formato_descarga:
+                                    if formato == "PNG":
+                                        path = guardar_visualizacion(fig, nombre_grafico, 'png')
+                                        if path:
+                                            st.markdown(get_download_link(path, f"Descargar {nombre_grafico}.png", "png"), unsafe_allow_html=True)
+                                            st.session_state.visualizaciones_generadas.append(f"Heatmap: {nombre_grafico}.png")
+                                    elif formato == "HTML":
+                                        path = guardar_visualizacion(fig, nombre_grafico, 'html')
+                                        if path:
+                                            st.markdown(get_download_link(path, f"Descargar {nombre_grafico}.html", "html"), unsafe_allow_html=True)
+                                            st.session_state.visualizaciones_generadas.append(f"Heatmap: {nombre_grafico}.html")
+                        else:
+                            st.warning("Se necesitan al menos 2 columnas numéricas para el heatmap")
+                    
+                    # Más tipos de gráficos pueden agregarse aquí...
             
             with tab3:
                 st.subheader("Reportes de Calidad")
@@ -489,21 +626,40 @@ def main():
                 except Exception as e:
                     st.error(f"❌ Error al exportar a JSON: {str(e)}")
             
-            # Exportar reporte de transformaciones
-            st.subheader("📄 Reporte de Transformaciones")
-            if st.session_state.transformaciones:
-                reporte_txt_path = os.path.join(tempfile.gettempdir(), 'reporte_transformaciones.txt')
+            # Exportar reporte de transformaciones (INCLUYENDO VISUALIZACIONES)
+            st.subheader("📄 Reporte Completo de Proceso")
+            
+            if st.button("📋 Generar Reporte Completo", type="primary"):
+                reporte_txt_path = os.path.join(tempfile.gettempdir(), 'reporte_completo_proceso.txt')
                 with open(reporte_txt_path, 'w', encoding='utf-8') as f:
-                    f.write("REPORTE DE TRANSFORMACIONES APLICADAS\n")
-                    f.write("=" * 50 + "\n\n")
-                    f.write(f"Fecha: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+                    f.write("REPORTE COMPLETO DEL PROCESO DE TRATAMIENTO DE DATOS\n")
+                    f.write("=" * 60 + "\n\n")
+                    f.write(f"Fecha de generación: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
                     f.write(f"Archivo original: {len(st.session_state.df_original)} filas × {len(st.session_state.df_original.columns)} columnas\n")
                     f.write(f"Archivo procesado: {len(df)} filas × {len(df.columns)} columnas\n\n")
-                    f.write("TRANSFORMACIONES:\n")
+                    
+                    f.write("TRANSFORMACIONES APLICADAS:\n")
+                    f.write("-" * 30 + "\n")
                     for i, transformacion in enumerate(st.session_state.transformaciones, 1):
                         f.write(f"{i}. {transformacion}\n")
+                    
+                    f.write("\nVISUALIZACIONES GENERADAS:\n")
+                    f.write("-" * 30 + "\n")
+                    if st.session_state.visualizaciones_generadas:
+                        for i, visualizacion in enumerate(st.session_state.visualizaciones_generadas, 1):
+                            f.write(f"{i}. {visualizacion}\n")
+                    else:
+                        f.write("No se generaron visualizaciones\n")
+                    
+                    f.write("\nESTADÍSTICAS FINALES:\n")
+                    f.write("-" * 25 + "\n")
+                    f.write(f"Total de filas: {len(df)}\n")
+                    f.write(f"Total de columnas: {len(df.columns)}\n")
+                    f.write(f"Valores nulos restantes: {df.isnull().sum().sum()}\n")
+                    f.write(f"Memoria utilizada: {df.memory_usage(deep=True).sum() / 1024**2:.2f} MB\n")
                 
-                st.markdown(get_download_link(reporte_txt_path, "Descargar Reporte", "txt"), unsafe_allow_html=True)
+                st.markdown(get_download_link(reporte_txt_path, "Descargar Reporte Completo", "txt"), unsafe_allow_html=True)
+                st.success("✅ Reporte completo generado")
             
             # Botones finales
             col_fin1, col_fin2, col_fin3 = st.columns([1, 1, 1])
@@ -536,17 +692,17 @@ def main():
         - Limpieza de texto (minúsculas, sin acentos)
         - Manejo de valores nulos
         - Protección de columnas geográficas
-        - Procesamiento seguro
+        - Eliminación de columnas y duplicados
         
         **3. 📊 Análisis y Visualización**
         - Análisis de calidad de datos
-        - Gráficos interactivos
+        - Gráficos interactivos avanzados
+        - Múltiples formatos de descarga
         - Reportes detallados
-        - Identificación de problemas
         
         **4. 💾 Exportación**
         - Múltiples formatos (CSV, Excel, Parquet, JSON)
-        - Reportes de transformaciones
+        - Reportes completos con visualizaciones
         - Datos listos para usar
         
         ### 👆 Para comenzar:
