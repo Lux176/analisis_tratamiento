@@ -46,6 +46,27 @@ def es_columna_geografica(nombre_columna):
     nombre_limpio = str(nombre_columna).lower()
     return any(patron in nombre_limpio for patron in patrones_geo)
 
+def preparar_dataframe_parquet(df):
+    """Prepara el DataFrame para exportación a Parquet manejando tipos de datos problemáticos"""
+    df_parquet = df.copy()
+    
+    # Convertir tipos de datos problemáticos
+    for columna in df_parquet.columns:
+        # Manejar tipos mixed
+        if df_parquet[columna].dtype == 'object':
+            try:
+                # Intentar convertir a string
+                df_parquet[columna] = df_parquet[columna].astype(str)
+            except:
+                # Si falla, convertir a string manejando errores
+                df_parquet[columna] = df_parquet[columna].apply(lambda x: str(x) if pd.notna(x) else None)
+        
+        # Manejar datetime problems
+        elif 'datetime' in str(df_parquet[columna].dtype):
+            df_parquet[columna] = pd.to_datetime(df_parquet[columna], errors='coerce')
+    
+    return df_parquet
+
 def generar_reporte_calidad(df, df_original):
     """Genera un reporte completo de calidad de datos"""
     reporte = {
@@ -95,29 +116,32 @@ def generar_reporte_calidad(df, df_original):
 
 def get_download_link(file_path, file_label, file_type):
     """Genera enlace de descarga"""
-    with open(file_path, "rb") as f:
-        data = f.read()
-    b64 = base64.b64encode(data).decode()
-    file_name = os.path.basename(file_path)
-    
-    if file_type == 'excel':
-        mime_type = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
-        ext = 'xlsx'
-    elif file_type == 'csv':
-        mime_type = 'text/csv'
-        ext = 'csv'
-    elif file_type == 'json':
-        mime_type = 'application/json'
-        ext = 'json'
-    elif file_type == 'parquet':
-        mime_type = 'application/octet-stream'
-        ext = 'parquet'
-    else:
-        mime_type = 'text/plain'
-        ext = 'txt'
-    
-    href = f'<a href="data:{mime_type};base64,{b64}" download="{file_name}.{ext}" style="background-color: #4CAF50; color: white; padding: 10px 20px; text-align: center; text-decoration: none; display: inline-block; border-radius: 5px; margin: 5px;">📥 {file_label}</a>'
-    return href
+    try:
+        with open(file_path, "rb") as f:
+            data = f.read()
+        b64 = base64.b64encode(data).decode()
+        file_name = os.path.basename(file_path)
+        
+        if file_type == 'excel':
+            mime_type = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+            ext = 'xlsx'
+        elif file_type == 'csv':
+            mime_type = 'text/csv'
+            ext = 'csv'
+        elif file_type == 'json':
+            mime_type = 'application/json'
+            ext = 'json'
+        elif file_type == 'parquet':
+            mime_type = 'application/octet-stream'
+            ext = 'parquet'
+        else:
+            mime_type = 'text/plain'
+            ext = 'txt'
+        
+        href = f'<a href="data:{mime_type};base64,{b64}" download="{file_name}.{ext}" style="background-color: #4CAF50; color: white; padding: 10px 20px; text-align: center; text-decoration: none; display: inline-block; border-radius: 5px; margin: 5px;">📥 {file_label}</a>'
+        return href
+    except Exception as e:
+        return f'<p style="color: red;">Error al generar enlace: {str(e)}</p>'
 
 # --- INTERFAZ PRINCIPAL ---
 
@@ -444,16 +468,24 @@ def main():
                     st.markdown(get_download_link(excel_path, "Descargar Excel", "excel"), unsafe_allow_html=True)
                 
                 with col3:
-                    # Parquet
-                    parquet_path = os.path.join(tempfile.gettempdir(), 'datos_procesados.parquet')
-                    df.to_parquet(parquet_path, index=False)
-                    st.markdown(get_download_link(parquet_path, "Descargar Parquet", "parquet"), unsafe_allow_html=True)
+                    # Parquet con manejo de errores
+                    try:
+                        df_parquet = preparar_dataframe_parquet(df)
+                        parquet_path = os.path.join(tempfile.gettempdir(), 'datos_procesados.parquet')
+                        df_parquet.to_parquet(parquet_path, index=False)
+                        st.markdown(get_download_link(parquet_path, "Descargar Parquet", "parquet"), unsafe_allow_html=True)
+                    except Exception as e:
+                        st.error(f"❌ Error al exportar a Parquet: {str(e)}")
+                        st.info("💡 Intenta exportar en otro formato como CSV o Excel")
                 
                 with col4:
                     # JSON
-                    json_path = os.path.join(tempfile.gettempdir(), 'datos_procesados.json')
-                    df.to_json(json_path, orient='records', indent=2, force_ascii=False)
-                    st.markdown(get_download_link(json_path, "Descargar JSON", "json"), unsafe_allow_html=True)
+                    try:
+                        json_path = os.path.join(tempfile.gettempdir(), 'datos_procesados.json')
+                        df.to_json(json_path, orient='records', indent=2, force_ascii=False)
+                        st.markdown(get_download_link(json_path, "Descargar JSON", "json"), unsafe_allow_html=True)
+                    except Exception as e:
+                        st.error(f"❌ Error al exportar a JSON: {str(e)}")
                 
                 st.success("✅ Datos listos para exportar en múltiples formatos")
                 
