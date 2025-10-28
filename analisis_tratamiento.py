@@ -15,7 +15,7 @@ import io
 from io import BytesIO
 import json
 import hashlib
-import requests
+import time
 
 # Configuración de la página
 st.set_page_config(
@@ -27,10 +27,24 @@ st.set_page_config(
 
 # --- FUNCIONES DE UTILIDAD ---
 
-def mostrar_exito():
-    """Muestra GIF de éxito"""
+def mostrar_exito_temporal():
+    """Muestra GIF de éxito temporalmente"""
     gif_url = "https://media0.giphy.com/media/v1.Y2lkPTc5MGI3NjExMjJ5czlta3hsc2RvY2k0eGpzbDllNGJlMjB1dzkwaGp6cXU4aGtoZiZlcD12MV9pbnRlcm5hbF9naWZfYnlfaWQmY3Q9Zw/tIeCLkB8geYtW/giphy.gif"
-    st.markdown(f'<div style="text-align: center;"><img src="{gif_url}" width="200"></div>', unsafe_allow_html=True)
+    
+    # Usar un placeholder que se remueve automáticamente
+    placeholder = st.empty()
+    placeholder.markdown(f'<div style="text-align: center;"><img src="{gif_url}" width="200"></div>', unsafe_allow_html=True)
+    
+    # Programar la remoción después de 3 segundos
+    def remover_gif():
+        time.sleep(3)
+        placeholder.empty()
+    
+    # Ejecutar en un thread separado para no bloquear la UI
+    import threading
+    thread = threading.Thread(target=remover_gif)
+    thread.daemon = True
+    thread.start()
 
 def limpiar_texto(texto):
     """Normaliza texto a minúsculas y sin acentos"""
@@ -273,7 +287,7 @@ def main():
                     st.session_state.tratamiento_aplicado = False
                     
                     st.success(f"✅ Archivo cargado: {uploaded_file.name}")
-                    mostrar_exito()
+                    mostrar_exito_temporal()
                     st.info(f"📊 Dimensiones: {df.shape[0]} filas × {df.shape[1]} columnas")
                     
                     # Mostrar vista previa
@@ -351,7 +365,7 @@ def main():
                             st.session_state.df_procesado = df_reducido
                             st.session_state.columnas_eliminadas_temp.extend(columnas_validas)
                             st.success(f"✅ Columnas eliminadas correctamente: {', '.join(columnas_validas)}")
-                            mostrar_exito()
+                            mostrar_exito_temporal()
                             st.rerun()
                         else:
                             st.error("❌ Las columnas seleccionadas no existen en el dataset")
@@ -371,7 +385,7 @@ def main():
                         st.session_state.df_procesado = df_sin_duplicados
                         st.session_state.transformaciones.append(f"Eliminadas {eliminadas} filas duplicadas")
                         st.success(f"✅ Se eliminaron {eliminadas} filas duplicadas")
-                        mostrar_exito()
+                        mostrar_exito_temporal()
                     else:
                         st.info("ℹ️ No se encontraron filas duplicadas")
                     st.rerun()
@@ -391,7 +405,7 @@ def main():
                     st.session_state.transformaciones.extend(transformaciones)
                     st.session_state.tratamiento_aplicado = True
                     st.success("✅ Tratamiento automático aplicado correctamente")
-                    mostrar_exito()
+                    mostrar_exito_temporal()
                     st.rerun()
             
             # Mostrar estado actual
@@ -440,13 +454,14 @@ def main():
                     st.session_state.transformaciones = []
                     st.session_state.tratamiento_aplicado = False
                     st.success("✅ Tratamiento reiniciado")
+                    mostrar_exito_temporal()
                     st.rerun()
             with col_btn3:
                 if st.button("Continuar a Análisis ➡️", type="primary", use_container_width=True):
                     st.session_state.etapa_actual = 3
                     st.rerun()
     
-    # ETAPA 3: ANÁLISIS Y VISUALIZACIÓN
+    # ETAPA 3: ANÁLISIS Y VISUALIZACIÓN - CORREGIDA
     elif st.session_state.etapa_actual == 3:
         st.header("📊 Paso 3: Análisis y Visualización")
         
@@ -489,7 +504,8 @@ def main():
                     with col_viz1:
                         tipo_grafico = st.selectbox(
                             "Tipo de gráfico:",
-                            ["Barras", "Dispersión", "Líneas", "Histograma", "Boxplot", "Heatmap", "Torta"]
+                            ["Barras", "Dispersión", "Líneas", "Histograma", "Boxplot", "Heatmap", "Torta"],
+                            key="tipo_grafico_select"
                         )
                     
                     with col_viz2:
@@ -497,170 +513,260 @@ def main():
                         formato_descarga = st.multiselect(
                             "Formatos de descarga:",
                             ["PNG", "HTML"],
-                            default=["PNG"]
+                            default=["PNG"],
+                            key="formato_descarga_select"
                         )
                     
                     # Configuración del gráfico según tipo
                     if tipo_grafico == "Barras":
                         col_conf1, col_conf2 = st.columns(2)
                         with col_conf1:
-                            eje_x = st.selectbox("Eje X:", df.columns.tolist())
+                            eje_x = st.selectbox("Eje X:", df.columns.tolist(), key="barras_eje_x")
                         with col_conf2:
-                            eje_y = st.selectbox("Eje Y:", df.select_dtypes(include=[np.number]).columns.tolist())
+                            # Para barras, el eje Y puede ser numérico o categórico (conteo)
+                            opciones_y = df.select_dtypes(include=[np.number]).columns.tolist()
+                            opciones_y.insert(0, "Conteo (automático)")
+                            eje_y = st.selectbox("Eje Y:", opciones_y, key="barras_eje_y")
                         
-                        color_col = st.selectbox("Color (opcional):", [None] + df.columns.tolist())
-                        titulo_grafico = st.text_input("Título del gráfico:", f"{eje_y} por {eje_x}")
+                        color_col = st.selectbox("Color (opcional):", [None] + df.columns.tolist(), key="barras_color")
+                        titulo_grafico = st.text_input("Título del gráfico:", f"Gráfico de Barras - {eje_x}", key="barras_titulo")
                         detalles_grafico = st.text_area("Detalles/Descripción (opcional):", 
-                                                       f"Gráfico de barras mostrando {eje_y} agrupado por {eje_x}")
+                                                       f"Gráfico de barras mostrando distribución por {eje_x}", 
+                                                       key="barras_detalles")
                         
                         # Generar gráfico en tiempo real
-                        fig = px.bar(df, x=eje_x, y=eje_y, color=color_col, 
-                                   title=titulo_grafico)
-                        fig.update_layout(
-                            annotations=[
-                                dict(
-                                    text=detalles_grafico,
-                                    x=0.5,
-                                    y=-0.2,
-                                    xref="paper",
-                                    yref="paper",
-                                    showarrow=False,
-                                    font=dict(size=10),
-                                    align="center"
+                        try:
+                            if eje_y == "Conteo (automático)":
+                                # Gráfico de conteo
+                                conteo_data = df[eje_x].value_counts().reset_index()
+                                conteo_data.columns = [eje_x, 'Conteo']
+                                fig = px.bar(conteo_data, x=eje_x, y='Conteo', color=color_col, 
+                                           title=titulo_grafico)
+                            else:
+                                # Gráfico con eje Y específico
+                                fig = px.bar(df, x=eje_x, y=eje_y, color=color_col, 
+                                           title=titulo_grafico)
+                            
+                            # Añadir descripción si se proporciona
+                            if detalles_grafico.strip():
+                                fig.update_layout(
+                                    annotations=[
+                                        dict(
+                                            text=detalles_grafico,
+                                            x=0.5,
+                                            y=-0.15,
+                                            xref="paper",
+                                            yref="paper",
+                                            showarrow=False,
+                                            font=dict(size=10, color="gray"),
+                                            align="center"
+                                        )
+                                    ],
+                                    margin=dict(b=100)  # Espacio extra en la parte inferior
                                 )
-                            ]
-                        )
-                        st.plotly_chart(fig, use_container_width=True)
-                        
-                        # Descarga
-                        if st.button("💾 Descargar Visualización"):
-                            nombre_grafico = f"barras_{eje_x}_{eje_y}".replace(" ", "_")
-                            for formato in formato_descarga:
-                                if formato == "PNG":
-                                    path = guardar_visualizacion(fig, nombre_grafico, 'png')
+                            
+                            st.plotly_chart(fig, use_container_width=True)
+                            
+                            # Descarga
+                            if st.button("💾 Descargar Visualización", key="descargar_barras"):
+                                nombre_base = f"barras_{eje_x}" if eje_y == "Conteo (automático)" else f"barras_{eje_x}_{eje_y}"
+                                nombre_grafico = nombre_base.replace(" ", "_").replace("/", "_")
+                                descargas_exitosas = 0
+                                
+                                for formato in formato_descarga:
+                                    path = guardar_visualizacion(fig, nombre_grafico, formato.lower())
                                     if path:
-                                        st.markdown(get_download_link(path, f"Descargar {nombre_grafico}.png", "png"), unsafe_allow_html=True)
-                                        st.session_state.visualizaciones_generadas.append(f"Gráfico de barras: {nombre_grafico}.png")
-                                        mostrar_exito()
-                                elif formato == "HTML":
-                                    path = guardar_visualizacion(fig, nombre_grafico, 'html')
-                                    if path:
-                                        st.markdown(get_download_link(path, f"Descargar {nombre_grafico}.html", "html"), unsafe_allow_html=True)
-                                        st.session_state.visualizaciones_generadas.append(f"Gráfico de barras: {nombre_grafico}.html")
-                                        mostrar_exito()
+                                        st.markdown(get_download_link(path, f"Descargar {nombre_grafico}.{formato.lower()}", formato.lower()), unsafe_allow_html=True)
+                                        st.session_state.visualizaciones_generadas.append(f"Gráfico de barras: {nombre_grafico}.{formato.lower()}")
+                                        descargas_exitosas += 1
+                                
+                                if descargas_exitosas > 0:
+                                    st.success("✅ Visualización descargada correctamente")
+                                    mostrar_exito_temporal()
+                                
+                        except Exception as e:
+                            st.error(f"❌ Error al generar gráfico de barras: {str(e)}")
                     
                     elif tipo_grafico == "Dispersión":
                         col_conf1, col_conf2 = st.columns(2)
                         with col_conf1:
-                            eje_x = st.selectbox("Eje X:", df.select_dtypes(include=[np.number]).columns.tolist())
+                            # Para dispersión, solo columnas numéricas en X
+                            opciones_x = df.select_dtypes(include=[np.number]).columns.tolist()
+                            if not opciones_x:
+                                st.error("❌ No hay columnas numéricas para el eje X")
+                            else:
+                                eje_x = st.selectbox("Eje X:", opciones_x, key="dispersion_eje_x")
                         with col_conf2:
-                            eje_y = st.selectbox("Eje Y:", df.select_dtypes(include=[np.number]).columns.tolist())
+                            # Para dispersión, solo columnas numéricas en Y
+                            opciones_y = df.select_dtypes(include=[np.number]).columns.tolist()
+                            if not opciones_y:
+                                st.error("❌ No hay columnas numéricas para el eje Y")
+                            else:
+                                eje_y = st.selectbox("Eje Y:", opciones_y, key="dispersion_eje_y")
                         
-                        color_col = st.selectbox("Color (opcional):", [None] + df.columns.tolist())
-                        size_col = st.selectbox("Tamaño (opcional):", [None] + df.select_dtypes(include=[np.number]).columns.tolist())
-                        titulo_grafico = st.text_input("Título del gráfico:", f"Dispersión: {eje_y} vs {eje_x}")
-                        detalles_grafico = st.text_area("Detalles/Descripción (opcional):", 
-                                                       f"Gráfico de dispersión mostrando la relación entre {eje_x} y {eje_y}")
-                        
-                        # Generar gráfico en tiempo real
-                        fig = px.scatter(df, x=eje_x, y=eje_y, color=color_col, size=size_col, 
-                                       title=titulo_grafico)
-                        fig.update_layout(
-                            annotations=[
-                                dict(
-                                    text=detalles_grafico,
-                                    x=0.5,
-                                    y=-0.2,
-                                    xref="paper",
-                                    yref="paper",
-                                    showarrow=False,
-                                    font=dict(size=10),
-                                    align="center"
-                                )
-                            ]
-                        )
-                        st.plotly_chart(fig, use_container_width=True)
-                        
-                        if st.button("💾 Descargar Visualización"):
-                            nombre_grafico = f"dispersion_{eje_x}_{eje_y}".replace(" ", "_")
-                            for formato in formato_descarga:
-                                if formato == "PNG":
-                                    path = guardar_visualizacion(fig, nombre_grafico, 'png')
-                                    if path:
-                                        st.markdown(get_download_link(path, f"Descargar {nombre_grafico}.png", "png"), unsafe_allow_html=True)
-                                        st.session_state.visualizaciones_generadas.append(f"Gráfico de dispersión: {nombre_grafico}.png")
-                                        mostrar_exito()
-                                elif formato == "HTML":
-                                    path = guardar_visualizacion(fig, nombre_grafico, 'html')
-                                    if path:
-                                        st.markdown(get_download_link(path, f"Descargar {nombre_grafico}.html", "html"), unsafe_allow_html=True)
-                                        st.session_state.visualizaciones_generadas.append(f"Gráfico de dispersión: {nombre_grafico}.html")
-                                        mostrar_exito()
+                        if opciones_x and opciones_y:
+                            color_col = st.selectbox("Color (opcional):", [None] + df.columns.tolist(), key="dispersion_color")
+                            size_col = st.selectbox("Tamaño (opcional):", [None] + df.select_dtypes(include=[np.number]).columns.tolist(), key="dispersion_size")
+                            titulo_grafico = st.text_input("Título del gráfico:", f"Dispersión: {eje_y} vs {eje_x}", key="dispersion_titulo")
+                            detalles_grafico = st.text_area("Detalles/Descripción (opcional):", 
+                                                           f"Gráfico de dispersión mostrando la relación entre {eje_x} y {eje_y}", 
+                                                           key="dispersion_detalles")
+                            
+                            # Generar gráfico en tiempo real
+                            try:
+                                fig = px.scatter(df, x=eje_x, y=eje_y, color=color_col, size=size_col, 
+                                               title=titulo_grafico)
+                                
+                                # Añadir descripción si se proporciona
+                                if detalles_grafico.strip():
+                                    fig.update_layout(
+                                        annotations=[
+                                            dict(
+                                                text=detalles_grafico,
+                                                x=0.5,
+                                                y=-0.15,
+                                                xref="paper",
+                                                yref="paper",
+                                                showarrow=False,
+                                                font=dict(size=10, color="gray"),
+                                                align="center"
+                                            )
+                                        ],
+                                        margin=dict(b=100)
+                                    )
+                                
+                                st.plotly_chart(fig, use_container_width=True)
+                                
+                                if st.button("💾 Descargar Visualización", key="descargar_dispersion"):
+                                    nombre_grafico = f"dispersion_{eje_x}_{eje_y}".replace(" ", "_").replace("/", "_")
+                                    descargas_exitosas = 0
+                                    
+                                    for formato in formato_descarga:
+                                        path = guardar_visualizacion(fig, nombre_grafico, formato.lower())
+                                        if path:
+                                            st.markdown(get_download_link(path, f"Descargar {nombre_grafico}.{formato.lower()}", formato.lower()), unsafe_allow_html=True)
+                                            st.session_state.visualizaciones_generadas.append(f"Gráfico de dispersión: {nombre_grafico}.{formato.lower()}")
+                                            descargas_exitosas += 1
+                                    
+                                    if descargas_exitosas > 0:
+                                        st.success("✅ Visualización descargada correctamente")
+                                        mostrar_exito_temporal()
+                                
+                            except Exception as e:
+                                st.error(f"❌ Error al generar gráfico de dispersión: {str(e)}")
                     
                     elif tipo_grafico == "Heatmap":
                         columnas_numericas = df.select_dtypes(include=[np.number]).columns.tolist()
                         if len(columnas_numericas) > 1:
-                            titulo_grafico = st.text_input("Título del gráfico:", "Matriz de Correlación")
+                            titulo_grafico = st.text_input("Título del gráfico:", "Matriz de Correlación", key="heatmap_titulo")
                             detalles_grafico = st.text_area("Detalles/Descripción (opcional):", 
-                                                           "Heatmap mostrando las correlaciones entre variables numéricas")
+                                                           "Heatmap mostrando las correlaciones entre variables numéricas", 
+                                                           key="heatmap_detalles")
                             
-                            fig = px.imshow(
-                                df[columnas_numericas].corr(),
-                                title=titulo_grafico,
-                                aspect="auto"
-                            )
-                            fig.update_layout(
-                                annotations=[
-                                    dict(
-                                        text=detalles_grafico,
-                                        x=0.5,
-                                        y=-0.3,
-                                        xref="paper",
-                                        yref="paper",
-                                        showarrow=False,
-                                        font=dict(size=10),
-                                        align="center"
+                            try:
+                                # Calcular matriz de correlación
+                                corr_matrix = df[columnas_numericas].corr()
+                                
+                                fig = px.imshow(
+                                    corr_matrix,
+                                    title=titulo_grafico,
+                                    aspect="auto",
+                                    color_continuous_scale='RdBu_r',
+                                    zmin=-1,
+                                    zmax=1
+                                )
+                                
+                                # Añadir descripción si se proporciona
+                                if detalles_grafico.strip():
+                                    fig.update_layout(
+                                        annotations=[
+                                            dict(
+                                                text=detalles_grafico,
+                                                x=0.5,
+                                                y=-0.2,
+                                                xref="paper",
+                                                yref="paper",
+                                                showarrow=False,
+                                                font=dict(size=10, color="gray"),
+                                                align="center"
+                                            )
+                                        ],
+                                        margin=dict(b=80)
                                     )
-                                ]
-                            )
-                            st.plotly_chart(fig, use_container_width=True)
-                            
-                            if st.button("💾 Descargar Visualización"):
-                                nombre_grafico = "heatmap_correlacion"
-                                for formato in formato_descarga:
-                                    if formato == "PNG":
-                                        path = guardar_visualizacion(fig, nombre_grafico, 'png')
+                                
+                                st.plotly_chart(fig, use_container_width=True)
+                                
+                                if st.button("💾 Descargar Visualización", key="descargar_heatmap"):
+                                    nombre_grafico = "heatmap_correlacion"
+                                    descargas_exitosas = 0
+                                    
+                                    for formato in formato_descarga:
+                                        path = guardar_visualizacion(fig, nombre_grafico, formato.lower())
                                         if path:
-                                            st.markdown(get_download_link(path, f"Descargar {nombre_grafico}.png", "png"), unsafe_allow_html=True)
-                                            st.session_state.visualizaciones_generadas.append(f"Heatmap: {nombre_grafico}.png")
-                                            mostrar_exito()
-                                    elif formato == "HTML":
-                                        path = guardar_visualizacion(fig, nombre_grafico, 'html')
-                                        if path:
-                                            st.markdown(get_download_link(path, f"Descargar {nombre_grafico}.html", "html"), unsafe_allow_html=True)
-                                            st.session_state.visualizaciones_generadas.append(f"Heatmap: {nombre_grafico}.html")
-                                            mostrar_exito()
+                                            st.markdown(get_download_link(path, f"Descargar {nombre_grafico}.{formato.lower()}", formato.lower()), unsafe_allow_html=True)
+                                            st.session_state.visualizaciones_generadas.append(f"Heatmap: {nombre_grafico}.{formato.lower()}")
+                                            descargas_exitosas += 1
+                                    
+                                    if descargas_exitosas > 0:
+                                        st.success("✅ Visualización descargada correctamente")
+                                        mostrar_exito_temporal()
+                                
+                            except Exception as e:
+                                st.error(f"❌ Error al generar heatmap: {str(e)}")
                         else:
                             st.warning("Se necesitan al menos 2 columnas numéricas para el heatmap")
+                    
+                    # Otros tipos de gráficos pueden agregarse aquí con la misma estructura...
             
             with tab3:
-                st.subheader("Reportes de Calidad")
+                st.subheader("📄 Reportes de Calidad")
                 
-                if st.button("Generar Reporte Completo", type="primary"):
+                if st.button("📋 Generar y Descargar Reporte Completo", type="primary", key="generar_reporte_btn"):
                     with st.spinner("Generando reporte..."):
-                        reporte = generar_reporte_calidad(df, st.session_state.df_original)
-                        
-                        # Mostrar resumen
-                        col_rep1, col_rep2, col_rep3, col_rep4 = st.columns(4)
-                        with col_rep1:
-                            st.metric("Filas Originales", reporte['metadata']['filas_originales'])
-                        with col_rep2:
-                            st.metric("Filas Finales", reporte['metadata']['filas_finales'])
-                        with col_rep3:
-                            st.metric("Columnas Originales", reporte['metadata']['columnas_originales'])
-                        with col_rep4:
-                            st.metric("Columnas Finales", reporte['metadata']['columnas_finales'])
-                        mostrar_exito()
+                        try:
+                            reporte = generar_reporte_calidad(df, st.session_state.df_original)
+                            
+                            # Mostrar resumen
+                            col_rep1, col_rep2, col_rep3, col_rep4 = st.columns(4)
+                            with col_rep1:
+                                st.metric("Filas Originales", reporte['metadata']['filas_originales'])
+                            with col_rep2:
+                                st.metric("Filas Finales", reporte['metadata']['filas_finales'])
+                            with col_rep3:
+                                st.metric("Columnas Originales", reporte['metadata']['columnas_originales'])
+                            with col_rep4:
+                                st.metric("Columnas Finales", reporte['metadata']['columnas_finales'])
+                            
+                            # Generar archivo de reporte descargable
+                            reporte_txt_path = os.path.join(tempfile.gettempdir(), 'reporte_calidad_datos.txt')
+                            with open(reporte_txt_path, 'w', encoding='utf-8') as f:
+                                f.write("REPORTE DE CALIDAD DE DATOS\n")
+                                f.write("=" * 50 + "\n\n")
+                                f.write(f"Fecha de generación: {reporte['metadata']['fecha_generacion']}\n")
+                                f.write(f"Archivo original: {reporte['metadata']['filas_originales']} filas × {reporte['metadata']['columnas_originales']} columnas\n")
+                                f.write(f"Archivo procesado: {reporte['metadata']['filas_finales']} filas × {reporte['metadata']['columnas_finales']} columnas\n\n")
+                                
+                                f.write("ESTADÍSTICAS POR COLUMNA:\n")
+                                f.write("-" * 25 + "\n")
+                                for columna, stats in reporte['estadisticas_por_columna'].items():
+                                    f.write(f"\n{columna}:\n")
+                                    f.write(f"  Tipo: {stats['tipo_dato']}\n")
+                                    f.write(f"  No nulos: {stats['valores_no_nulos']}\n")
+                                    f.write(f"  Nulos: {stats['valores_nulos']} ({stats['porcentaje_nulos']}%)\n")
+                                    f.write(f"  Valores únicos: {stats['valores_unicos']}\n")
+                                
+                                if reporte['problemas_detectados']:
+                                    f.write("\nPROBLEMAS DETECTADOS:\n")
+                                    f.write("-" * 22 + "\n")
+                                    for problema in reporte['problemas_detectados']:
+                                        f.write(f"- {problema}\n")
+                            
+                            st.markdown(get_download_link(reporte_txt_path, "Descargar Reporte Completo", "txt"), unsafe_allow_html=True)
+                            st.success("✅ Reporte generado correctamente")
+                            mostrar_exito_temporal()
+                            
+                        except Exception as e:
+                            st.error(f"❌ Error al generar reporte: {str(e)}")
             
             # Botones de navegación
             st.markdown("---")
@@ -685,7 +791,7 @@ def main():
             df = st.session_state.df_procesado
             
             st.success("✅ Tus datos están listos para exportar")
-            mostrar_exito()
+            mostrar_exito_temporal()
             
             # Resumen final
             col_sum1, col_sum2, col_sum3 = st.columns(3)
@@ -765,7 +871,7 @@ def main():
                 
                 st.markdown(get_download_link(reporte_txt_path, "Descargar Reporte Completo", "txt"), unsafe_allow_html=True)
                 st.success("✅ Reporte completo generado")
-                mostrar_exito()
+                mostrar_exito_temporal()
             
             # Botones finales
             st.markdown("---")
