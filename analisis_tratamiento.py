@@ -1,933 +1,295 @@
+# --- IMPORTS NECESARIOS ---
 import streamlit as st
 import pandas as pd
 import numpy as np
-import matplotlib.pyplot as plt
-import seaborn as sns
-import plotly.express as px
-import plotly.graph_objects as go
-from datetime import datetime
-import re
-import unicodedata
-import tempfile
-import os
-import base64
-import io
-from io import BytesIO
 import json
-import hashlib
-import time
+import folium
+from folium.plugins import HeatMap
+from streamlit_folium import st_folium
+from io import BytesIO
+import unicodedata
+import base64
+import tempfile
 
-# Configuración de la página
+# --- CONFIGURACIÓN DE LA PÁGINA ---
 st.set_page_config(
-    page_title="Sistema de Tratamiento de Datos",
-    page_icon="🔧",
-    layout="wide",
-    initial_sidebar_state="expanded"
+    page_title="Mapa de Atenciones Prehospitalarias",
+    page_icon="🚑",
+    layout="wide"
 )
 
-# --- FUNCIONES DE UTILIDAD ---
-
-def mostrar_exito_temporal():
-    """Muestra GIF de éxito temporalmente"""
-    gif_url = "https://media0.giphy.com/media/v1.Y2lkPTc5MGI3NjExMjJ5czlta3hsc2RvY2k0eGpzbDllNGJlMjB1dzkwaGp6cXU4aGtoZiZlcD12MV9pbnRlcm5hbF9naWZfYnlfaWQmY3Q9Zw/tIeCLkB8geYtW/giphy.gif"
-    
-    # Usar un placeholder que se remueve automáticamente
-    placeholder = st.empty()
-    placeholder.markdown(f'<div style="text-align: center;"><img src="{gif_url}" width="200"></div>', unsafe_allow_html=True)
-    
-    # Programar la remoción después de 3 segundos
-    def remover_gif():
-        time.sleep(3)
-        placeholder.empty()
-    
-    # Ejecutar en un thread separado para no bloquear la UI
-    import threading
-    thread = threading.Thread(target=remover_gif)
-    thread.daemon = True
-    thread.start()
+# --- FUNCIONES DE PROCESAMIENTO (SIN CAMBIOS EN SU LÓGICA INTERNA) ---
 
 def limpiar_texto(texto):
-    """Normaliza texto a minúsculas y sin acentos"""
-    if pd.isna(texto) or texto is None:
-        return texto
-    if not isinstance(texto, str):
-        return texto
-    
-    texto_limpio = unicodedata.normalize('NFD', str(texto))\
-                              .encode('ascii', 'ignore')\
-                              .decode('utf-8')\
-                              .lower()\
-                              .strip()
-    return texto_limpio
+    """Normaliza un texto a minúsculas y sin acentos."""
+    if not isinstance(texto, str): return texto
+    return unicodedata.normalize('NFD', texto).encode('ascii', 'ignore').decode('utf-8').lower().strip()
 
-def es_columna_geografica(nombre_columna):
-    """Identifica si una columna contiene datos geográficos"""
-    patrones_geo = ['lat', 'lon', 'long', 'latitude', 'longitude', 'coord', 'x', 'y']
-    nombre_limpio = str(nombre_columna).lower()
-    return any(patron in nombre_limpio for patron in patrones_geo)
+def obtener_centroide(feature):
+    """Calcula el centroide del polígono más grande en una feature GeoJSON."""
+    geom = feature.get("geometry", {})
+    gtype, coords = geom.get("type"), geom.get("coordinates", [])
+    if gtype == "Polygon": polygon_coords = coords[0]
+    elif gtype == "MultiPolygon": polygon_coords = max([poly[0] for poly in coords], key=len)
+    else: return None
+    if not polygon_coords: return None
+    longitudes, latitudes = zip(*polygon_coords)
+    return (sum(latitudes) / len(latitudes), sum(longitudes) / len(longitudes))
 
-def preparar_dataframe_parquet(df):
-    """Prepara el DataFrame para exportación a Parquet manejando tipos de datos problemáticos"""
-    df_parquet = df.copy()
-    
-    # Convertir tipos de datos problemáticos
-    for columna in df_parquet.columns:
-        # Manejar tipos mixed
-        if df_parquet[columna].dtype == 'object':
-            try:
-                # Intentar convertir a string
-                df_parquet[columna] = df_parquet[columna].astype(str)
-            except:
-                # Si falla, convertir a string manejando errores
-                df_parquet[columna] = df_parquet[columna].apply(lambda x: str(x) if pd.notna(x) else None)
-        
-        # Manejar datetime problems
-        elif 'datetime' in str(df_parquet[columna].dtype):
-            df_parquet[columna] = pd.to_datetime(df_parquet[columna], errors='coerce')
-    
-    return df_parquet
+def crear_mapa(df, gj_data, campo_geojson, col_lat, col_lon, col_colonia):
+    """Crea y configura el mapa Folium con todas sus capas."""
+    # st.info("🗺️ Creando mapa base...")
+    centro = [df[col_lat].mean(), df[col_lon].mean()]
+    mapa = folium.Map(location=centro, zoom_start=13, tiles="CartoDB positron")
+    color_map = {'Protección Civil': '#007bff', 'Servicios Médicos': '#800000'}
 
-def aplicar_tratamiento_automatico(df):
-    """Aplica tratamiento automático a los datos"""
-    df_tratado = df.copy()
-    transformaciones = []
-    
-    # Identificar columnas de texto (excluyendo geográficas)
-    columnas_texto = [col for col in df_tratado.columns if not es_columna_geografica(col)]
-    
-    # Aplicar limpieza de texto a columnas no geográficas
-    for columna in columnas_texto:
-        if df_tratado[columna].dtype == 'object':
-            df_tratado[columna] = df_tratado[columna].apply(limpiar_texto)
-            transformaciones.append(f"Limpieza de texto aplicada a: {columna}")
-    
-    # Manejar valores nulos en columnas no geográficas
-    columnas_con_nulos = df_tratado.columns[df_tratado.isnull().any()].tolist()
-    for columna in columnas_con_nulos:
-        if not es_columna_geografica(columna):
-            df_tratado[columna].fillna('null', inplace=True)
-            transformaciones.append(f"Valores nulos marcados como 'null' en: {columna}")
-    
-    return df_tratado, transformaciones
+    # CAPA DE COLONIAS
+    nombres_originales = {}
+    for feature in gj_data['features']:
+        if campo_geojson in feature['properties']:
+            original = feature['properties'][campo_geojson]
+            limpio = limpiar_texto(original)
+            feature['properties'][campo_geojson] = limpio
+            nombres_originales[limpio] = original
 
-def generar_reporte_calidad(df, df_original):
-    """Genera un reporte completo de calidad de datos"""
-    reporte = {
-        'metadata': {
-            'filas_originales': len(df_original),
-            'filas_finales': len(df),
-            'columnas_originales': len(df_original.columns),
-            'columnas_finales': len(df.columns),
-            'fecha_generacion': datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-        },
-        'estadisticas_por_columna': {},
-        'problemas_detectados': [],
-        'transformaciones_aplicadas': []
-    }
-    
-    # Estadísticas por columna
-    for columna in df.columns:
-        stats = {
-            'tipo_dato': str(df[columna].dtype),
-            'valores_no_nulos': df[columna].count(),
-            'valores_nulos': df[columna].isnull().sum(),
-            'porcentaje_nulos': round((df[columna].isnull().sum() / len(df)) * 100, 2),
-            'valores_unicos': df[columna].nunique(),
-            'ejemplos_valores': df[columna].dropna().head(3).tolist()
-        }
-        
-        if pd.api.types.is_numeric_dtype(df[columna]):
-            stats.update({
-                'min': float(df[columna].min()) if not df[columna].isnull().all() else None,
-                'max': float(df[columna].max()) if not df[columna].isnull().all() else None,
-                'media': float(df[columna].mean()) if not df[columna].isnull().all() else None,
-                'mediana': float(df[columna].median()) if not df[columna].isnull().all() else None
-            })
-        
-        reporte['estadisticas_por_columna'][columna] = stats
-    
-    # Detectar problemas
-    for columna in df.columns:
-        nulos_pct = reporte['estadisticas_por_columna'][columna]['porcentaje_nulos']
-        if nulos_pct > 50:
-            reporte['problemas_detectados'].append(f"Columna '{columna}': {nulos_pct}% de valores nulos")
-        
-        if df[columna].nunique() == 1:
-            reporte['problemas_detectados'].append(f"Columna '{columna}': Solo tiene un valor único")
-    
-    return reporte
+    folium.GeoJson(
+        gj_data, name='Colonias',
+        style_function=lambda x: {'fillColor': '#ffffff', 'color': '#808080', 'weight': 1, 'fillOpacity': 0.1},
+        tooltip=folium.GeoJsonTooltip(fields=[campo_geojson], aliases=['Colonia:'])
+    ).add_to(mapa)
 
-def get_download_link(file_path, file_label, file_type):
-    """Genera enlace de descarga"""
-    try:
-        with open(file_path, "rb") as f:
-            data = f.read()
-        b64 = base64.b64encode(data).decode()
-        file_name = os.path.basename(file_path)
-        
-        if file_type == 'excel':
-            mime_type = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
-            ext = 'xlsx'
-        elif file_type == 'csv':
-            mime_type = 'text/csv'
-            ext = 'csv'
-        elif file_type == 'json':
-            mime_type = 'application/json'
-            ext = 'json'
-        elif file_type == 'parquet':
-            mime_type = 'application/octet-stream'
-            ext = 'parquet'
-        elif file_type == 'png':
-            mime_type = 'image/png'
-            ext = 'png'
-        elif file_type == 'html':
-            mime_type = 'text/html'
-            ext = 'html'
-        else:
-            mime_type = 'text/plain'
-            ext = 'txt'
-        
-        href = f'<a href="data:{mime_type};base64,{b64}" download="{file_name}.{ext}" style="background-color: #4CAF50; color: white; padding: 10px 20px; text-align: center; text-decoration: none; display: inline-block; border-radius: 5px; margin: 5px;">📥 {file_label}</a>'
-        return href
-    except Exception as e:
-        return f'<p style="color: red;">Error al generar enlace: {str(e)}</p>'
+    # CAPA DE NOMBRES
+    capa_nombres = folium.FeatureGroup(name="Nombres de Colonias", show=True).add_to(mapa)
+    for feature in gj_data['features']:
+        centro_colonia = obtener_centroide(feature)
+        nombre_limpio = feature['properties'].get(campo_geojson)
+        if centro_colonia and nombre_limpio:
+            nombre_display = nombres_originales.get(nombre_limpio, nombre_limpio).title()
+            folium.Marker(
+                location=centro_colonia,
+                icon=folium.DivIcon(html=f'<div style="font-family: Arial; font-size: 11px; font-weight: bold; color: #333; text-shadow: 1px 1px 1px #FFF; white-space: nowrap;">{nombre_display}</div>')
+            ).add_to(capa_nombres)
 
-def guardar_visualizacion(fig, nombre, formato='png'):
-    """Guarda visualización en formato especificado"""
-    try:
-        if formato == 'png':
-            path = os.path.join(tempfile.gettempdir(), f'{nombre}.png')
-            fig.write_image(path)
-        elif formato == 'html':
-            path = os.path.join(tempfile.gettempdir(), f'{nombre}.html')
-            fig.write_html(path)
-        return path
-    except Exception as e:
-        st.error(f"Error al guardar visualización: {str(e)}")
-        return None
+    # CAPAS DE PUNTOS Y CALOR
+    puntos_pc = folium.FeatureGroup(name="Puntos: Protección Civil (Azul)", show=True).add_to(mapa)
+    puntos_sm = folium.FeatureGroup(name="Puntos: Servicios Médicos (Vino)", show=True).add_to(mapa)
+    calor_pc = folium.FeatureGroup(name="Calor: Protección Civil", show=True).add_to(mapa)
+    calor_sm = folium.FeatureGroup(name="Calor: Servicios Médicos", show=False).add_to(mapa)
 
-# --- INTERFAZ PRINCIPAL ---
+    df_pc = df[df['Fuente de Atención'] == 'Protección Civil']
+    df_sm = df[df['Fuente de Atención'] == 'Servicios Médicos']
 
-def main():
-    st.title("🔧 Sistema de Tratamiento de Datos")
-    st.markdown("---")
+    for _, row in df_pc.iterrows():
+        popup_html = f"<b>Fecha:</b> {row[col_fecha].date()}<br><b>Colonia:</b> {row[col_colonia].title()}<br><b>Atendido por:</b> Protección Civil"
+        folium.CircleMarker(location=[row[col_lat], row[col_lon]], radius=5, color=color_map['Protección Civil'], fill=True, fill_color=color_map['Protección Civil'], fill_opacity=0.8, popup=folium.Popup(popup_html, max_width=300), tooltip="Protección Civil").add_to(puntos_pc)
     
-    # Inicializar session state
-    if 'etapa_actual' not in st.session_state:
-        st.session_state.etapa_actual = 1  # 1: Carga, 2: Tratamiento, 3: Análisis, 4: Exportación
-    if 'df_original' not in st.session_state:
-        st.session_state.df_original = None
-    if 'df_procesado' not in st.session_state:
-        st.session_state.df_procesado = None
-    if 'transformaciones' not in st.session_state:
-        st.session_state.transformaciones = []
-    if 'tratamiento_aplicado' not in st.session_state:
-        st.session_state.tratamiento_aplicado = False
-    if 'visualizaciones_generadas' not in st.session_state:
-        st.session_state.visualizaciones_generadas = []
-    if 'columnas_eliminadas_temp' not in st.session_state:
-        st.session_state.columnas_eliminadas_temp = []
+    for _, row in df_sm.iterrows():
+        popup_html = f"<b>Fecha:</b> {row[col_fecha].date()}<br><b>Colonia:</b> {row[col_colonia].title()}<br><b>Atendido por:</b> Servicios Médicos"
+        folium.CircleMarker(location=[row[col_lat], row[col_lon]], radius=5, color=color_map['Servicios Médicos'], fill=True, fill_color=color_map['Servicios Médicos'], fill_opacity=0.8, popup=folium.Popup(popup_html, max_width=300), tooltip="Servicios Médicos").add_to(puntos_sm)
     
-    # Barra de progreso
-    col_prog1, col_prog2, col_prog3, col_prog4 = st.columns(4)
-    with col_prog1:
-        st.metric("Paso 1", "📁 Carga", 
-                 delta="Activo" if st.session_state.etapa_actual == 1 else "Completado" if st.session_state.etapa_actual > 1 else "Pendiente",
-                 delta_color="normal" if st.session_state.etapa_actual == 1 else "off")
-    with col_prog2:
-        st.metric("Paso 2", "🛠️ Tratamiento", 
-                 delta="Activo" if st.session_state.etapa_actual == 2 else "Completado" if st.session_state.etapa_actual > 2 else "Pendiente",
-                 delta_color="normal" if st.session_state.etapa_actual == 2 else "off")
-    with col_prog3:
-        st.metric("Paso 3", "📊 Análisis", 
-                 delta="Activo" if st.session_state.etapa_actual == 3 else "Completado" if st.session_state.etapa_actual > 3 else "Pendiente",
-                 delta_color="normal" if st.session_state.etapa_actual == 3 else "off")
-    with col_prog4:
-        st.metric("Paso 4", "💾 Exportar", 
-                 delta="Activo" if st.session_state.etapa_actual == 4 else "Pendiente",
-                 delta_color="normal" if st.session_state.etapa_actual == 4 else "off")
+    if not df_pc.empty: HeatMap(df_pc[[col_lat, col_lon]].values, radius=15).add_to(calor_pc)
+    if not df_sm.empty: HeatMap(df_sm[[col_lat, col_lon]].values, radius=15).add_to(calor_sm)
+
+    folium.LayerControl(collapsed=False).add_to(mapa)
+    return mapa
+
+# --- FUNCIONES DE DESCARGA AGREGADAS ---
+def guardar_mapa_html(mapa):
+    """Guarda el mapa como archivo HTML temporal y devuelve los datos para descarga"""
+    with tempfile.NamedTemporaryFile(delete=False, suffix='.html') as tmp_file:
+        mapa.save(tmp_file.name)
+        with open(tmp_file.name, 'r', encoding='utf-8') as f:
+            html_content = f.read()
+    return html_content
+
+def crear_boton_descarga(data, nombre_archivo, tipo_descarga):
+    """Crea un botón de descarga para el archivo"""
+    b64 = base64.b64encode(data).decode()
+    href = f'data:application/octet-stream;base64,{b64}'
+    st.download_button(
+        label=f"📥 Descargar {tipo_descarga}",
+        data=data,
+        file_name=nombre_archivo,
+        mime="application/octet-stream",
+        key=f"download_{tipo_descarga}"
+    )
+
+# --- INTERFAZ DE STREAMLIT ---
+
+st.title("🚑 Generador de Mapas de Atenciones Prehospitalarias")
+st.markdown("Esta herramienta te permite visualizar en un mapa interactivo los reportes de atenciones médicas.")
+
+# --- BARRA LATERAL CON CONTROLES ---
+with st.sidebar:
+    st.header("⚙️ Configuración del Mapa")
     
-    # ETAPA 1: CARGA DE DATOS
-    if st.session_state.etapa_actual == 1:
-        st.header("📁 Paso 1: Carga de Datos")
+    # PASO 1: Cargar archivos
+    st.subheader("1. Carga tus archivos")
+    uploaded_data_file = st.file_uploader(
+        "Sube el archivo de atenciones (Excel o CSV)",
+        type=['xlsx', 'csv']
+    )
+    uploaded_geojson_file = st.file_uploader(
+        "Sube el archivo de colonias (GeoJSON)",
+        type=['geojson', 'json']
+    )
+
+    # Variables para almacenar selecciones
+    df = None
+    gj_data = None
+    
+    if uploaded_data_file and uploaded_geojson_file:
+        # Cargar DataFrames
+        try:
+            if uploaded_data_file.name.endswith('.xlsx'):
+                df = pd.read_excel(uploaded_data_file)
+            else:
+                df = pd.read_csv(uploaded_data_file)
+            
+            gj_data = json.load(uploaded_geojson_file)
+            st.success("✅ ¡Archivos cargados correctamente!")
+        except Exception as e:
+            st.error(f"Error al leer los archivos: {e}")
+            st.stop()
+            
+        # PASO 2: Mapeo de columnas
+        st.subheader("2. Asigna las columnas")
         
-        with st.container():
-            col1, col2 = st.columns([2, 1])
-            with col1:
-                uploaded_file = st.file_uploader(
-                    "Sube tu archivo de datos",
-                    type=['csv', 'xlsx', 'xls', 'parquet'],
-                    help="Formatos soportados: CSV, Excel, Parquet"
-                )
-            
-            with col2:
-                st.info("""
-                **📋 Formatos aceptados:**
-                - CSV (.csv)
-                - Excel (.xlsx, .xls)
-                - Parquet (.parquet)
-                """)
+        columnas_disponibles = df.columns.tolist()
         
-        if uploaded_file is not None:
-            try:
-                # Leer archivo
-                with st.spinner("Cargando archivo..."):
-                    if uploaded_file.name.endswith('.csv'):
-                        df = pd.read_csv(uploaded_file)
-                    elif uploaded_file.name.endswith('.parquet'):
-                        df = pd.read_parquet(uploaded_file)
-                    else:
-                        df = pd.read_excel(uploaded_file)
-                    
-                    st.session_state.df_original = df.copy()
-                    st.session_state.df_procesado = df.copy()
-                    st.session_state.transformaciones = []
-                    st.session_state.visualizaciones_generadas = []
-                    st.session_state.columnas_eliminadas_temp = []
-                    st.session_state.tratamiento_aplicado = False
-                    
-                    st.success(f"✅ Archivo cargado: {uploaded_file.name}")
-                    mostrar_exito_temporal()
-                    st.info(f"📊 Dimensiones: {df.shape[0]} filas × {df.shape[1]} columnas")
-                    
-                    # Mostrar vista previa
-                    with st.expander("👀 Vista previa de los datos (primeras 10 filas)"):
-                        st.dataframe(df.head(10), use_container_width=True)
-                    
-                    # Información básica
-                    col_info1, col_info2, col_info3 = st.columns(3)
-                    with col_info1:
-                        st.metric("Total Filas", df.shape[0])
-                    with col_info2:
-                        st.metric("Total Columnas", df.shape[1])
-                    with col_info3:
-                        st.metric("Valores Nulos", df.isnull().sum().sum())
-                    
-                    # Botón para avanzar al tratamiento
-                    if st.button("🚀 Continuar a Tratamiento", type="primary", use_container_width=True):
-                        st.session_state.etapa_actual = 2
-                        st.rerun()
-                        
-            except Exception as e:
-                st.error(f"❌ Error al cargar el archivo: {str(e)}")
-    
-    # ETAPA 2: TRATAMIENTO DE DATOS
-    elif st.session_state.etapa_actual == 2:
-        st.header("🛠️ Paso 2: Tratamiento de Datos")
+        col_lat = st.selectbox("Columna de LATITUD:", columnas_disponibles, index=None, placeholder="Selecciona una opción")
+        col_lon = st.selectbox("Columna de LONGITUD:", columnas_disponibles, index=None, placeholder="Selecciona una opción")
+        col_colonia = st.selectbox("Columna de COLONIA:", columnas_disponibles, index=None, placeholder="Selecciona una opción")
+        col_fecha = st.selectbox("Columna de FECHA:", columnas_disponibles, index=None, placeholder="Selecciona una opción")
+        col_sm = st.selectbox("Columna de SERVICIOS MÉDICOS (SM):", columnas_disponibles, index=None, placeholder="Selecciona una opción")
         
-        if st.session_state.df_original is not None:
-            df_original = st.session_state.df_original
-            
-            with st.container():
-                st.subheader("🔍 Análisis Inicial del Dataset")
-                
-                # Mostrar problemas detectados
-                columnas_con_nulos = df_original.columns[df_original.isnull().any()].tolist()
-                columnas_geograficas = [col for col in df_original.columns if es_columna_geografica(col)]
-                columnas_texto = [col for col in df_original.columns if df_original[col].dtype == 'object' and not es_columna_geografica(col)]
-                
-                col_anal1, col_anal2, col_anal3 = st.columns(3)
-                with col_anal1:
-                    st.metric("Columnas con Nulos", len(columnas_con_nulos))
-                with col_anal2:
-                    st.metric("Columnas de Texto", len(columnas_texto))
-                with col_anal3:
-                    st.metric("Columnas Geográficas", len(columnas_geograficas))
-                
-                if columnas_geograficas:
-                    st.info(f"🛡️ **Columnas geográficas protegidas:** {', '.join(columnas_geograficas)}")
-            
-            # OPCIONES AVANZADAS DE TRATAMIENTO - AHORA SE APLICAN MANUALMENTE
-            st.subheader("⚙️ Configuración de Tratamiento")
-            
-            col_adv1, col_adv2 = st.columns(2)
-            
-            with col_adv1:
-                st.write("**🗑️ Eliminar Columnas**")
-                columnas_disponibles = st.session_state.df_procesado.columns.tolist()
-                columnas_a_eliminar = st.multiselect(
-                    "Selecciona columnas para eliminar:",
-                    options=columnas_disponibles,
-                    help="Las columnas seleccionadas serán eliminadas del dataset"
-                )
-                
-                # Mostrar preview de columnas a eliminar
-                if columnas_a_eliminar:
-                    st.warning(f"⚠️ Se eliminarán {len(columnas_a_eliminar)} columnas: {', '.join(columnas_a_eliminar)}")
-                
-                if st.button("🗑️ Confirmar Eliminación de Columnas", key="eliminar_columnas_btn"):
-                    if columnas_a_eliminar:
-                        df_actual = st.session_state.df_procesado.copy()
-                        # Verificar que las columnas existen
-                        columnas_validas = [col for col in columnas_a_eliminar if col in df_actual.columns]
-                        if columnas_validas:
-                            df_reducido = df_actual.drop(columns=columnas_validas)
-                            st.session_state.df_procesado = df_reducido
-                            st.session_state.columnas_eliminadas_temp.extend(columnas_validas)
-                            st.success(f"✅ Columnas eliminadas correctamente: {', '.join(columnas_validas)}")
-                            mostrar_exito_temporal()
-                            st.rerun()
-                        else:
-                            st.error("❌ Las columnas seleccionadas no existen en el dataset")
-                    else:
-                        st.warning("⚠️ Selecciona al menos una columna para eliminar")
-            
-            with col_adv2:
-                st.write("**🔍 Eliminar Filas Duplicadas**")
-                if st.button("🔍 Eliminar Filas Duplicadas", key="eliminar_duplicados_btn"):
-                    df_actual = st.session_state.df_procesado.copy()
-                    filas_antes = len(df_actual)
-                    df_sin_duplicados = df_actual.drop_duplicates()
-                    filas_despues = len(df_sin_duplicados)
-                    eliminadas = filas_antes - filas_despues
-                    
-                    if eliminadas > 0:
-                        st.session_state.df_procesado = df_sin_duplicados
-                        st.session_state.transformaciones.append(f"Eliminadas {eliminadas} filas duplicadas")
-                        st.success(f"✅ Se eliminaron {eliminadas} filas duplicadas")
-                        mostrar_exito_temporal()
-                    else:
-                        st.info("ℹ️ No se encontraron filas duplicadas")
-                    st.rerun()
-            
-            # BOTÓN PARA APLICAR TRATAMIENTO AUTOMÁTICO (SOLO CUANDO EL USUARIO ESTÉ LISTO)
-            st.subheader("🎯 Aplicar Tratamiento Automático")
-            st.info("""
-            **Este tratamiento aplicará:**
-            - 📝 Limpieza de texto (minúsculas, sin acentos) en columnas no geográficas
-            - 🎯 Marcado de valores nulos como 'null' en columnas no geográficas
-            """)
-            
-            if st.button("🚀 APLICAR TRATAMIENTO AUTOMÁTICO", type="primary", use_container_width=True):
-                with st.spinner("Aplicando tratamiento automático..."):
-                    df_tratado, transformaciones = aplicar_tratamiento_automatico(st.session_state.df_procesado)
-                    st.session_state.df_procesado = df_tratado
-                    st.session_state.transformaciones.extend(transformaciones)
-                    st.session_state.tratamiento_aplicado = True
-                    st.success("✅ Tratamiento automático aplicado correctamente")
-                    mostrar_exito_temporal()
-                    st.rerun()
-            
-            # Mostrar estado actual
-            st.subheader("📊 Estado Actual del Dataset")
-            
-            # Comparación antes/después
-            col_comp1, col_comp2 = st.columns(2)
-            with col_comp1:
-                st.write("**Dataset Original:**")
-                st.dataframe(st.session_state.df_original.head(3), use_container_width=True)
-                st.caption(f"Dimensiones: {st.session_state.df_original.shape[0]} filas × {st.session_state.df_original.shape[1]} columnas")
-            with col_comp2:
-                st.write("**Dataset Actual (con cambios):**")
-                st.dataframe(st.session_state.df_procesado.head(3), use_container_width=True)
-                st.caption(f"Dimensiones: {st.session_state.df_procesado.shape[0]} filas × {st.session_state.df_procesado.shape[1]} columnas")
-            
-            # Métricas de cambios
-            st.subheader("📈 Resumen de Cambios")
-            col_mej1, col_mej2, col_mej3 = st.columns(3)
-            with col_mej1:
-                cambio_filas = len(st.session_state.df_original) - len(st.session_state.df_procesado)
-                st.metric("Cambio en Filas", cambio_filas)
-            with col_mej2:
-                cambio_columnas = len(st.session_state.df_original.columns) - len(st.session_state.df_procesado.columns)
-                st.metric("Cambio en Columnas", cambio_columnas)
-            with col_mej3:
-                st.metric("Transformaciones", len(st.session_state.transformaciones))
-            
-            # Transformaciones aplicadas
-            if st.session_state.transformaciones:
-                with st.expander("📋 Ver transformaciones aplicadas"):
-                    for i, transformacion in enumerate(st.session_state.transformaciones, 1):
-                        st.write(f"{i}. {transformacion}")
-            
-            # Botones de navegación
-            st.markdown("---")
-            col_btn1, col_btn2, col_btn3 = st.columns([1, 1, 1])
-            with col_btn1:
-                if st.button("⬅️ Volver a Carga", use_container_width=True):
-                    st.session_state.etapa_actual = 1
-                    st.rerun()
-            with col_btn2:
-                if st.button("🔄 Reiniciar Tratamiento", use_container_width=True):
-                    # Restaurar dataset original pero mantener columnas eliminadas
-                    st.session_state.df_procesado = st.session_state.df_original.copy()
-                    st.session_state.transformaciones = []
-                    st.session_state.tratamiento_aplicado = False
-                    st.success("✅ Tratamiento reiniciado")
-                    mostrar_exito_temporal()
-                    st.rerun()
-            with col_btn3:
-                if st.button("Continuar a Análisis ➡️", type="primary", use_container_width=True):
-                    st.session_state.etapa_actual = 3
-                    st.rerun()
-    
-    # ETAPA 3: ANÁLISIS Y VISUALIZACIÓN - CORREGIDA
-    elif st.session_state.etapa_actual == 3:
-        st.header("📊 Paso 3: Análisis y Visualización")
+        # Columnas que NO deben recibir tratamiento de datos
+        st.subheader("3. Columnas excluidas de tratamiento")
+        st.info("Las siguientes columnas no recibirán tratamiento especial (limpieza de texto, etc.):")
         
-        if st.session_state.df_procesado is not None:
-            df = st.session_state.df_procesado
+        # Mostrar columnas disponibles para exclusión
+        columnas_excluir_default = []
+        posibles_columnas_excluir = ['Hora de arribo (Formato 24hrs)', 'Hora de salida del lugar (Formato 24hrs)', '¿El reporte referente a las lluvias?']
+        
+        for col in posibles_columnas_excluir:
+            if col in columnas_disponibles:
+                columnas_excluir_default.append(col)
+        
+        if columnas_excluir_default:
+            st.write("**Columnas excluidas automáticamente:**")
+            for col in columnas_excluir_default:
+                st.write(f"• {col}")
+        
+        # Selección del campo del GeoJSON
+        try:
+            campos_geojson = list(gj_data['features'][0]['properties'].keys())
+            campo_geojson_seleccionado = st.selectbox("Campo con nombre de la colonia en GeoJSON:", campos_geojson, index=None, placeholder="Selecciona una opción")
+        except (IndexError, KeyError):
+            st.error("El archivo GeoJSON no tiene un formato válido o está vacío.")
+            st.stop()
+
+        # Validar que todas las columnas necesarias han sido seleccionadas
+        columnas_esenciales = [col_lat, col_lon, col_colonia, col_fecha, col_sm, campo_geojson_seleccionado]
+        
+        if all(columnas_esenciales):
+            # PROCESAMIENTO DE DATOS (EXCLUYENDO COLUMNAS ESPECÍFICAS)
+            st.subheader("4. Filtra por fecha")
             
-            # Pestañas de análisis
-            tab1, tab2, tab3 = st.tabs(["🔍 Calidad de Datos", "📈 Visualización Avanzada", "📄 Reportes"])
+            # Crear copia del DataFrame para no modificar el original
+            df_procesado = df.copy()
             
-            with tab1:
-                st.subheader("Análisis de Calidad de Datos")
-                
-                # Resumen de nulos
-                nulos_por_columna = df.isnull().sum()
-                if nulos_por_columna.sum() > 0:
-                    fig_nulos = px.bar(
-                        x=nulos_por_columna.index,
-                        y=nulos_por_columna.values,
-                        title="Valores Nulos por Columna",
-                        labels={'x': 'Columnas', 'y': 'Cantidad de Nulos'}
+            # Aplicar tratamiento solo a columnas que no están en la lista de exclusión
+            columnas_para_limpiar = [col for col in [col_sm, col_colonia] if col not in columnas_excluir_default]
+            
+            # Aplicar limpieza de texto solo a las columnas que no están excluidas
+            for columna in columnas_para_limpiar:
+                if columna == col_sm:
+                    df_procesado['Fuente de Atención'] = np.where(
+                        df_procesado[col_sm].apply(lambda x: limpiar_texto(x) if col_sm not in columnas_excluir_default else x) == 'sm', 
+                        'Servicios Médicos', 
+                        'Protección Civil'
                     )
-                    fig_nulos.update_layout(xaxis_tickangle=-45)
-                    st.plotly_chart(fig_nulos, use_container_width=True)
-                else:
-                    st.success("🎉 No se encontraron valores nulos en el dataset")
-                
-                # Tipos de datos
-                st.subheader("Tipos de Datos")
-                tipos_datos = df.dtypes.reset_index()
-                tipos_datos.columns = ['Columna', 'Tipo de Dato']
-                st.dataframe(tipos_datos, use_container_width=True)
+                elif columna == col_colonia and col_colonia not in columnas_excluir_default:
+                    df_procesado[col_colonia] = df_procesado[col_colonia].apply(limpiar_texto)
             
-            with tab2:
-                st.subheader("📊 Visualización Avanzada en Tiempo Real")
-                
-                if not df.empty:
-                    # Selección de tipo de gráfico
-                    col_viz1, col_viz2 = st.columns(2)
-                    
-                    with col_viz1:
-                        tipo_grafico = st.selectbox(
-                            "Tipo de gráfico:",
-                            ["Barras", "Dispersión", "Líneas", "Histograma", "Boxplot", "Heatmap", "Torta"],
-                            key="tipo_grafico_select"
-                        )
-                    
-                    with col_viz2:
-                        # Opciones de descarga
-                        formato_descarga = st.multiselect(
-                            "Formatos de descarga:",
-                            ["PNG", "HTML"],
-                            default=["PNG"],
-                            key="formato_descarga_select"
-                        )
-                    
-                    # Configuración del gráfico según tipo
-                    if tipo_grafico == "Barras":
-                        col_conf1, col_conf2 = st.columns(2)
-                        with col_conf1:
-                            eje_x = st.selectbox("Eje X:", df.columns.tolist(), key="barras_eje_x")
-                        with col_conf2:
-                            # Para barras, el eje Y puede ser numérico o categórico (conteo)
-                            opciones_y = df.select_dtypes(include=[np.number]).columns.tolist()
-                            opciones_y.insert(0, "Conteo (automático)")
-                            eje_y = st.selectbox("Eje Y:", opciones_y, key="barras_eje_y")
-                        
-                        color_col = st.selectbox("Color (opcional):", [None] + df.columns.tolist(), key="barras_color")
-                        titulo_grafico = st.text_input("Título del gráfico:", f"Gráfico de Barras - {eje_x}", key="barras_titulo")
-                        detalles_grafico = st.text_area("Detalles/Descripción (opcional):", 
-                                                       f"Gráfico de barras mostrando distribución por {eje_x}", 
-                                                       key="barras_detalles")
-                        
-                        # Generar gráfico en tiempo real
-                        try:
-                            if eje_y == "Conteo (automático)":
-                                # Gráfico de conteo
-                                conteo_data = df[eje_x].value_counts().reset_index()
-                                conteo_data.columns = [eje_x, 'Conteo']
-                                fig = px.bar(conteo_data, x=eje_x, y='Conteo', color=color_col, 
-                                           title=titulo_grafico)
-                            else:
-                                # Gráfico con eje Y específico
-                                fig = px.bar(df, x=eje_x, y=eje_y, color=color_col, 
-                                           title=titulo_grafico)
-                            
-                            # Añadir descripción si se proporciona
-                            if detalles_grafico.strip():
-                                fig.update_layout(
-                                    annotations=[
-                                        dict(
-                                            text=detalles_grafico,
-                                            x=0.5,
-                                            y=-0.15,
-                                            xref="paper",
-                                            yref="paper",
-                                            showarrow=False,
-                                            font=dict(size=10, color="gray"),
-                                            align="center"
-                                        )
-                                    ],
-                                    margin=dict(b=100)  # Espacio extra en la parte inferior
-                                )
-                            
-                            st.plotly_chart(fig, use_container_width=True)
-                            
-                            # Descarga
-                            if st.button("💾 Descargar Visualización", key="descargar_barras"):
-                                nombre_base = f"barras_{eje_x}" if eje_y == "Conteo (automático)" else f"barras_{eje_x}_{eje_y}"
-                                nombre_grafico = nombre_base.replace(" ", "_").replace("/", "_")
-                                descargas_exitosas = 0
-                                
-                                for formato in formato_descarga:
-                                    path = guardar_visualizacion(fig, nombre_grafico, formato.lower())
-                                    if path:
-                                        st.markdown(get_download_link(path, f"Descargar {nombre_grafico}.{formato.lower()}", formato.lower()), unsafe_allow_html=True)
-                                        st.session_state.visualizaciones_generadas.append(f"Gráfico de barras: {nombre_grafico}.{formato.lower()}")
-                                        descargas_exitosas += 1
-                                
-                                if descargas_exitosas > 0:
-                                    st.success("✅ Visualización descargada correctamente")
-                                    mostrar_exito_temporal()
-                                
-                        except Exception as e:
-                            st.error(f"❌ Error al generar gráfico de barras: {str(e)}")
-                    
-                    elif tipo_grafico == "Dispersión":
-                        col_conf1, col_conf2 = st.columns(2)
-                        with col_conf1:
-                            # Para dispersión, solo columnas numéricas en X
-                            opciones_x = df.select_dtypes(include=[np.number]).columns.tolist()
-                            if not opciones_x:
-                                st.error("❌ No hay columnas numéricas para el eje X")
-                            else:
-                                eje_x = st.selectbox("Eje X:", opciones_x, key="dispersion_eje_x")
-                        with col_conf2:
-                            # Para dispersión, solo columnas numéricas en Y
-                            opciones_y = df.select_dtypes(include=[np.number]).columns.tolist()
-                            if not opciones_y:
-                                st.error("❌ No hay columnas numéricas para el eje Y")
-                            else:
-                                eje_y = st.selectbox("Eje Y:", opciones_y, key="dispersion_eje_y")
-                        
-                        if opciones_x and opciones_y:
-                            color_col = st.selectbox("Color (opcional):", [None] + df.columns.tolist(), key="dispersion_color")
-                            size_col = st.selectbox("Tamaño (opcional):", [None] + df.select_dtypes(include=[np.number]).columns.tolist(), key="dispersion_size")
-                            titulo_grafico = st.text_input("Título del gráfico:", f"Dispersión: {eje_y} vs {eje_x}", key="dispersion_titulo")
-                            detalles_grafico = st.text_area("Detalles/Descripción (opcional):", 
-                                                           f"Gráfico de dispersión mostrando la relación entre {eje_x} y {eje_y}", 
-                                                           key="dispersion_detalles")
-                            
-                            # Generar gráfico en tiempo real
-                            try:
-                                fig = px.scatter(df, x=eje_x, y=eje_y, color=color_col, size=size_col, 
-                                               title=titulo_grafico)
-                                
-                                # Añadir descripción si se proporciona
-                                if detalles_grafico.strip():
-                                    fig.update_layout(
-                                        annotations=[
-                                            dict(
-                                                text=detalles_grafico,
-                                                x=0.5,
-                                                y=-0.15,
-                                                xref="paper",
-                                                yref="paper",
-                                                showarrow=False,
-                                                font=dict(size=10, color="gray"),
-                                                align="center"
-                                            )
-                                        ],
-                                        margin=dict(b=100)
-                                    )
-                                
-                                st.plotly_chart(fig, use_container_width=True)
-                                
-                                if st.button("💾 Descargar Visualización", key="descargar_dispersion"):
-                                    nombre_grafico = f"dispersion_{eje_x}_{eje_y}".replace(" ", "_").replace("/", "_")
-                                    descargas_exitosas = 0
-                                    
-                                    for formato in formato_descarga:
-                                        path = guardar_visualizacion(fig, nombre_grafico, formato.lower())
-                                        if path:
-                                            st.markdown(get_download_link(path, f"Descargar {nombre_grafico}.{formato.lower()}", formato.lower()), unsafe_allow_html=True)
-                                            st.session_state.visualizaciones_generadas.append(f"Gráfico de dispersión: {nombre_grafico}.{formato.lower()}")
-                                            descargas_exitosas += 1
-                                    
-                                    if descargas_exitosas > 0:
-                                        st.success("✅ Visualización descargada correctamente")
-                                        mostrar_exito_temporal()
-                                
-                            except Exception as e:
-                                st.error(f"❌ Error al generar gráfico de dispersión: {str(e)}")
-                    
-                    elif tipo_grafico == "Heatmap":
-                        columnas_numericas = df.select_dtypes(include=[np.number]).columns.tolist()
-                        if len(columnas_numericas) > 1:
-                            titulo_grafico = st.text_input("Título del gráfico:", "Matriz de Correlación", key="heatmap_titulo")
-                            detalles_grafico = st.text_area("Detalles/Descripción (opcional):", 
-                                                           "Heatmap mostrando las correlaciones entre variables numéricas", 
-                                                           key="heatmap_detalles")
-                            
-                            try:
-                                # Calcular matriz de correlación
-                                corr_matrix = df[columnas_numericas].corr()
-                                
-                                fig = px.imshow(
-                                    corr_matrix,
-                                    title=titulo_grafico,
-                                    aspect="auto",
-                                    color_continuous_scale='RdBu_r',
-                                    zmin=-1,
-                                    zmax=1
-                                )
-                                
-                                # Añadir descripción si se proporciona
-                                if detalles_grafico.strip():
-                                    fig.update_layout(
-                                        annotations=[
-                                            dict(
-                                                text=detalles_grafico,
-                                                x=0.5,
-                                                y=-0.2,
-                                                xref="paper",
-                                                yref="paper",
-                                                showarrow=False,
-                                                font=dict(size=10, color="gray"),
-                                                align="center"
-                                            )
-                                        ],
-                                        margin=dict(b=80)
-                                    )
-                                
-                                st.plotly_chart(fig, use_container_width=True)
-                                
-                                if st.button("💾 Descargar Visualización", key="descargar_heatmap"):
-                                    nombre_grafico = "heatmap_correlacion"
-                                    descargas_exitosas = 0
-                                    
-                                    for formato in formato_descarga:
-                                        path = guardar_visualizacion(fig, nombre_grafico, formato.lower())
-                                        if path:
-                                            st.markdown(get_download_link(path, f"Descargar {nombre_grafico}.{formato.lower()}", formato.lower()), unsafe_allow_html=True)
-                                            st.session_state.visualizaciones_generadas.append(f"Heatmap: {nombre_grafico}.{formato.lower()}")
-                                            descargas_exitosas += 1
-                                    
-                                    if descargas_exitosas > 0:
-                                        st.success("✅ Visualización descargada correctamente")
-                                        mostrar_exito_temporal()
-                                
-                            except Exception as e:
-                                st.error(f"❌ Error al generar heatmap: {str(e)}")
-                        else:
-                            st.warning("Se necesitan al menos 2 columnas numéricas para el heatmap")
-                    
-                    # Otros tipos de gráficos pueden agregarse aquí con la misma estructura...
+            # Conversión de tipos de datos (excluyendo columnas específicas)
+            if col_lat not in columnas_excluir_default:
+                df_procesado[col_lat] = pd.to_numeric(df_procesado[col_lat], errors='coerce')
+            if col_lon not in columnas_excluir_default:
+                df_procesado[col_lon] = pd.to_numeric(df_procesado[col_lon], errors='coerce')
+            if col_fecha not in columnas_excluir_default:
+                df_procesado[col_fecha] = pd.to_datetime(df_procesado[col_fecha], errors='coerce')
             
-            with tab3:
-                st.subheader("📄 Reportes de Calidad")
-                
-                if st.button("📋 Generar y Descargar Reporte Completo", type="primary", key="generar_reporte_btn"):
-                    with st.spinner("Generando reporte..."):
-                        try:
-                            reporte = generar_reporte_calidad(df, st.session_state.df_original)
-                            
-                            # Mostrar resumen
-                            col_rep1, col_rep2, col_rep3, col_rep4 = st.columns(4)
-                            with col_rep1:
-                                st.metric("Filas Originales", reporte['metadata']['filas_originales'])
-                            with col_rep2:
-                                st.metric("Filas Finales", reporte['metadata']['filas_finales'])
-                            with col_rep3:
-                                st.metric("Columnas Originales", reporte['metadata']['columnas_originales'])
-                            with col_rep4:
-                                st.metric("Columnas Finales", reporte['metadata']['columnas_finales'])
-                            
-                            # Generar archivo de reporte descargable
-                            reporte_txt_path = os.path.join(tempfile.gettempdir(), 'reporte_calidad_datos.txt')
-                            with open(reporte_txt_path, 'w', encoding='utf-8') as f:
-                                f.write("REPORTE DE CALIDAD DE DATOS\n")
-                                f.write("=" * 50 + "\n\n")
-                                f.write(f"Fecha de generación: {reporte['metadata']['fecha_generacion']}\n")
-                                f.write(f"Archivo original: {reporte['metadata']['filas_originales']} filas × {reporte['metadata']['columnas_originales']} columnas\n")
-                                f.write(f"Archivo procesado: {reporte['metadata']['filas_finales']} filas × {reporte['metadata']['columnas_finales']} columnas\n\n")
-                                
-                                f.write("ESTADÍSTICAS POR COLUMNA:\n")
-                                f.write("-" * 25 + "\n")
-                                for columna, stats in reporte['estadisticas_por_columna'].items():
-                                    f.write(f"\n{columna}:\n")
-                                    f.write(f"  Tipo: {stats['tipo_dato']}\n")
-                                    f.write(f"  No nulos: {stats['valores_no_nulos']}\n")
-                                    f.write(f"  Nulos: {stats['valores_nulos']} ({stats['porcentaje_nulos']}%)\n")
-                                    f.write(f"  Valores únicos: {stats['valores_unicos']}\n")
-                                
-                                if reporte['problemas_detectados']:
-                                    f.write("\nPROBLEMAS DETECTADOS:\n")
-                                    f.write("-" * 22 + "\n")
-                                    for problema in reporte['problemas_detectados']:
-                                        f.write(f"- {problema}\n")
-                            
-                            st.markdown(get_download_link(reporte_txt_path, "Descargar Reporte Completo", "txt"), unsafe_allow_html=True)
-                            st.success("✅ Reporte generado correctamente")
-                            mostrar_exito_temporal()
-                            
-                        except Exception as e:
-                            st.error(f"❌ Error al generar reporte: {str(e)}")
+            # Limpiar datos (manteniendo las columnas excluidas intactas)
+            columnas_limpieza = [col_lat, col_lon, col_fecha, col_colonia]
+            columnas_limpieza_filtradas = [col for col in columnas_limpieza if col not in columnas_excluir_default]
             
-            # Botones de navegación
-            st.markdown("---")
-            col_nav1, col_nav2, col_nav3 = st.columns([1, 1, 1])
-            with col_nav1:
-                if st.button("⬅️ Volver a Tratamiento", use_container_width=True):
-                    st.session_state.etapa_actual = 2
-                    st.rerun()
-            with col_nav2:
-                if st.button("🔄 Actualizar Análisis", use_container_width=True):
-                    st.rerun()
-            with col_nav3:
-                if st.button("Continuar a Exportación ➡️", type="primary", use_container_width=True):
-                    st.session_state.etapa_actual = 4
-                    st.rerun()
+            df_limpio = df_procesado.dropna(subset=columnas_limpieza_filtradas)
+            
+            fecha_min = df_limpio[col_fecha].min().date()
+            fecha_max = df_limpio[col_fecha].max().date()
+            
+            fecha_inicio, fecha_fin = st.date_input(
+                "Selecciona el rango de fechas:",
+                value=(fecha_min, fecha_max),
+                min_value=fecha_min,
+                max_value=fecha_max
+            )
+            
+            if fecha_inicio and fecha_fin:
+                # Filtrar el DataFrame
+                df_filtrado = df_limpio[
+                    (df_limpio[col_fecha].dt.date >= fecha_inicio) &
+                    (df_limpio[col_fecha].dt.date <= fecha_fin)
+                ]
+
+# --- ÁREA PRINCIPAL PARA MOSTRAR EL MAPA ---
+if 'df_filtrado' in locals() and not df_filtrado.empty:
+    st.success(f"Mostrando {len(df_filtrado)} atenciones en el mapa.")
     
-    # ETAPA 4: EXPORTACIÓN
-    elif st.session_state.etapa_actual == 4:
-        st.header("💾 Paso 4: Exportar Datos Procesados")
-        
-        if st.session_state.df_procesado is not None:
-            df = st.session_state.df_procesado
-            
-            st.success("✅ Tus datos están listos para exportar")
-            mostrar_exito_temporal()
-            
-            # Resumen final
-            col_sum1, col_sum2, col_sum3 = st.columns(3)
-            with col_sum1:
-                st.metric("Filas Procesadas", len(df))
-            with col_sum2:
-                st.metric("Columnas Procesadas", len(df.columns))
-            with col_sum3:
-                st.metric("Transformaciones", len(st.session_state.transformaciones))
-            
-            # Opciones de exportación
-            st.subheader("📤 Formatos de Exportación")
-            col_exp1, col_exp2, col_exp3, col_exp4 = st.columns(4)
-            
-            with col_exp1:
-                # CSV
-                csv_path = os.path.join(tempfile.gettempdir(), 'datos_procesados.csv')
-                df.to_csv(csv_path, index=False, encoding='utf-8')
-                st.markdown(get_download_link(csv_path, "Descargar CSV", "csv"), unsafe_allow_html=True)
-            
-            with col_exp2:
-                # Excel
-                excel_path = os.path.join(tempfile.gettempdir(), 'datos_procesados.xlsx')
-                df.to_excel(excel_path, index=False)
-                st.markdown(get_download_link(excel_path, "Descargar Excel", "excel"), unsafe_allow_html=True)
-            
-            with col_exp3:
-                # Parquet con manejo de errores
-                try:
-                    df_parquet = preparar_dataframe_parquet(df)
-                    parquet_path = os.path.join(tempfile.gettempdir(), 'datos_procesados.parquet')
-                    df_parquet.to_parquet(parquet_path, index=False)
-                    st.markdown(get_download_link(parquet_path, "Descargar Parquet", "parquet"), unsafe_allow_html=True)
-                except Exception as e:
-                    st.error(f"❌ Error al exportar a Parquet: {str(e)}")
-            
-            with col_exp4:
-                # JSON
-                try:
-                    json_path = os.path.join(tempfile.gettempdir(), 'datos_procesados.json')
-                    df.to_json(json_path, orient='records', indent=2, force_ascii=False)
-                    st.markdown(get_download_link(json_path, "Descargar JSON", "json"), unsafe_allow_html=True)
-                except Exception as e:
-                    st.error(f"❌ Error al exportar a JSON: {str(e)}")
-            
-            # Exportar reporte de transformaciones (INCLUYENDO VISUALIZACIONES)
-            st.subheader("📄 Reporte Completo de Proceso")
-            
-            if st.button("📋 Generar Reporte Completo", type="primary"):
-                reporte_txt_path = os.path.join(tempfile.gettempdir(), 'reporte_completo_proceso.txt')
-                with open(reporte_txt_path, 'w', encoding='utf-8') as f:
-                    f.write("REPORTE COMPLETO DEL PROCESO DE TRATAMIENTO DE DATOS\n")
-                    f.write("=" * 60 + "\n\n")
-                    f.write(f"Fecha de generación: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
-                    f.write(f"Archivo original: {len(st.session_state.df_original)} filas × {len(st.session_state.df_original.columns)} columnas\n")
-                    f.write(f"Archivo procesado: {len(df)} filas × {len(df.columns)} columnas\n\n")
-                    
-                    f.write("TRANSFORMACIONES APLICADAS:\n")
-                    f.write("-" * 30 + "\n")
-                    for i, transformacion in enumerate(st.session_state.transformaciones, 1):
-                        f.write(f"{i}. {transformacion}\n")
-                    
-                    f.write("\nVISUALIZACIONES GENERADAS:\n")
-                    f.write("-" * 30 + "\n")
-                    if st.session_state.visualizaciones_generadas:
-                        for i, visualizacion in enumerate(st.session_state.visualizaciones_generadas, 1):
-                            f.write(f"{i}. {visualizacion}\n")
-                    else:
-                        f.write("No se generaron visualizaciones\n")
-                    
-                    f.write("\nESTADÍSTICAS FINALES:\n")
-                    f.write("-" * 25 + "\n")
-                    f.write(f"Total de filas: {len(df)}\n")
-                    f.write(f"Total de columnas: {len(df.columns)}\n")
-                    f.write(f"Valores nulos restantes: {df.isnull().sum().sum()}\n")
-                    f.write(f"Memoria utilizada: {df.memory_usage(deep=True).sum() / 1024**2:.2f} MB\n")
-                
-                st.markdown(get_download_link(reporte_txt_path, "Descargar Reporte Completo", "txt"), unsafe_allow_html=True)
-                st.success("✅ Reporte completo generado")
-                mostrar_exito_temporal()
-            
-            # Botones finales
-            st.markdown("---")
-            col_fin1, col_fin2, col_fin3, col_fin4 = st.columns([1, 1, 1, 1])
-            with col_fin1:
-                if st.button("⬅️ Volver a Análisis", use_container_width=True):
-                    st.session_state.etapa_actual = 3
-                    st.rerun()
-            with col_fin2:
-                if st.button("🔄 Nuevo Análisis", use_container_width=True):
-                    # Resetear todo
-                    for key in list(st.session_state.keys()):
-                        del st.session_state[key]
-                    st.rerun()
-            with col_fin3:
-                if st.button("🏠 Menú Principal", type="primary", use_container_width=True):
-                    # Resetear a estado inicial pero mantener archivo cargado
-                    st.session_state.etapa_actual = 1
-                    st.session_state.df_procesado = st.session_state.df_original.copy()
-                    st.session_state.transformaciones = []
-                    st.session_state.visualizaciones_generadas = []
-                    st.session_state.tratamiento_aplicado = False
-                    st.rerun()
-            with col_fin4:
-                st.info("🎉 ¡Proceso completado!")
+    # Mostrar métricas
+    conteo_pc = (df_filtrado['Fuente de Atención'] == 'Protección Civil').sum()
+    conteo_sm = (df_filtrado['Fuente de Atención'] == 'Servicios Médicos').sum()
     
-    # PANTALLA INICIAL
-    else:
-        st.markdown("""
-        ## 🚀 Bienvenido al Sistema de Tratamiento de Datos
-        
-        ### 📋 Flujo de Trabajo:
-        
-        **1. 📁 Carga de Datos**
-        - Sube tu archivo (CSV, Excel, Parquet)
-        - Vista previa inmediata
-        - Análisis inicial automático
-        
-        **2. 🛠️ Tratamiento Controlado**
-        - Elimina columnas específicas primero
-        - Aplica tratamiento automático cuando estés listo
-        - Control total sobre el proceso
-        
-        **3. 📊 Análisis y Visualización en Tiempo Real**
-        - Gráficos interactivos avanzados
-        - Títulos y descripciones personalizables
-        - Descarga en múltiples formatos
-        
-        **4. 💾 Exportación Completa**
-        - Múltiples formatos (CSV, Excel, Parquet, JSON)
-        - Reportes completos con visualizaciones
-        - Regreso al menú principal
-        
-        ### 👆 Para comenzar:
-        **Haz clic en 'Cargar Archivo' en la barra lateral** ←
+    col1, col2, col3 = st.columns(3)
+    col1.metric("Total de Atenciones", f"{conteo_pc + conteo_sm}")
+    col2.metric("Atenciones Protección Civil", f"{conteo_pc}")
+    col3.metric("Atenciones Servicios Médicos", f"{conteo_sm}")
+    
+    # Crear y mostrar el mapa
+    mapa_final = crear_mapa(df_filtrado, gj_data, campo_geojson_seleccionado, col_lat, col_lon, col_colonia)
+    
+    # Mostrar el mapa
+    st_folium(mapa_final, width=1200, height=600, returned_objects=[])
+    
+    # --- BOTONES DE DESCARGA AGREGADOS ---
+    st.markdown("---")
+    st.subheader("📥 Descargar Mapa")
+    
+    col_download1, col_download2 = st.columns(2)
+    
+    with col_download1:
+        # Botón para descargar HTML
+        if st.button("💾 Descargar como HTML", use_container_width=True):
+            with st.spinner("Generando archivo HTML..."):
+                html_content = guardar_mapa_html(mapa_final)
+                crear_boton_descarga(
+                    html_content.encode('utf-8'),
+                    "mapa_atenciones_prehospitalarias.html",
+                    "HTML"
+                )
+                st.success("✅ Archivo HTML listo para descargar")
+    
+    with col_download2:
+        # Información sobre descarga de imagen
+        st.info("""
+        **Para guardar como imagen:**
+        1. Haz clic derecho en el mapa
+        2. Selecciona *'Guardar imagen como...'*
+        3. Elige formato PNG o JPG
         """)
 
-if __name__ == "__main__":
-    main()
+elif 'uploaded_data_file' in locals() and uploaded_data_file and 'uploaded_geojson_file' in locals() and uploaded_geojson_file:
+    st.warning("⚠️ No se encontraron datos para el rango de fechas seleccionado o faltan asignaciones de columnas. Por favor, ajusta los filtros.")
+else:
+    st.info("👋 ¡Bienvenido! Por favor, sube tus archivos y configura las opciones en la barra lateral para generar el mapa.")
