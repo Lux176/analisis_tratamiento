@@ -18,10 +18,10 @@ st.set_page_config(
 # --- ESTILOS CSS OSCUROS ---
 st.markdown("""
     <style>
-        body { background-color: #0e1117; color: #fafafa; }
-        .stApp { background-color: #0e1117; }
+        body { background-color: #7b7d81; color: #fafafa; }
+        .stApp { background-color: #949599; }
         div[data-testid="stSidebar"] {
-            background-color: #1c1f26;
+            background-color: #cccdcf;
         }
         h1, h2, h3, h4, h5 {
             color: #00b4d8;
