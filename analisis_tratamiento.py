@@ -98,6 +98,90 @@ def restaurar_archivo():
     else:
         st.warning("⚠️ No hay archivo cargado para restaurar.")
 
+# --- NUEVA FUNCIÓN: FILTRADO POR FECHAS ---
+def filtrar_por_fechas(df, fecha_columna=None, filtro_tipo=None, año=None, mes=None, fecha_inicio=None, fecha_fin=None):
+    """
+    Filtra el DataFrame por criterios de fecha
+    
+    Parámetros:
+    - df: DataFrame a filtrar
+    - fecha_columna: nombre de la columna de fecha
+    - filtro_tipo: tipo de filtro ('año', 'mes', 'rango')
+    - año: año específico a filtrar
+    - mes: mes específico a filtrar
+    - fecha_inicio: fecha de inicio para rango
+    - fecha_fin: fecha de fin para rango
+    
+    Retorna:
+    - DataFrame filtrado
+    """
+    
+    if df is None or df.empty:
+        st.warning("⚠️ No hay datos para filtrar.")
+        return df
+    
+    # Buscar automáticamente columnas de fecha si no se especifica
+    if fecha_columna is None:
+        columnas_fecha = df.select_dtypes(include=['datetime64', 'datetime64[ns]']).columns
+        if len(columnas_fecha) == 0:
+            # Intentar convertir columnas que parezcan fechas
+            for col in df.columns:
+                try:
+                    pd.to_datetime(df[col], errors='raise')
+                    columnas_fecha = [col]
+                    break
+                except:
+                    continue
+        if len(columnas_fecha) > 0:
+            fecha_columna = columnas_fecha[0]
+            st.info(f"🔍 Columna de fecha detectada automáticamente: '{fecha_columna}'")
+        else:
+            st.error("❌ No se encontraron columnas de fecha en el dataset.")
+            return df
+    
+    # Verificar que la columna de fecha existe
+    if fecha_columna not in df.columns:
+        st.error(f"❌ La columna '{fecha_columna}' no existe en el dataset.")
+        return df
+    
+    # Convertir a datetime si no lo está
+    try:
+        df_filtrado = df.copy()
+        df_filtrado[fecha_columna] = pd.to_datetime(df_filtrado[fecha_columna])
+    except Exception as e:
+        st.error(f"❌ Error al convertir la columna '{fecha_columna}' a fecha: {e}")
+        return df
+    
+    # Aplicar filtros según el tipo seleccionado
+    registros_originales = len(df_filtrado)
+    
+    if filtro_tipo == "año" and año:
+        df_filtrado = df_filtrado[df_filtrado[fecha_columna].dt.year == año]
+        add_log(f"Filtrado por año: {año}")
+        st.success(f"✅ Filtrado por año {año}. Registros: {registros_originales} → {len(df_filtrado)}")
+        
+    elif filtro_tipo == "mes" and mes:
+        df_filtrado = df_filtrado[df_filtrado[fecha_columna].dt.month == mes]
+        nombre_mes = datetime(2023, mes, 1).strftime("%B")
+        add_log(f"Filtrado por mes: {nombre_mes}")
+        st.success(f"✅ Filtrado por mes {nombre_mes}. Registros: {registros_originales} → {len(df_filtrado)}")
+        
+    elif filtro_tipo == "rango" and fecha_inicio and fecha_fin:
+        fecha_inicio_dt = pd.to_datetime(fecha_inicio)
+        fecha_fin_dt = pd.to_datetime(fecha_fin)
+        df_filtrado = df_filtrado[
+            (df_filtrado[fecha_columna] >= fecha_inicio_dt) & 
+            (df_filtrado[fecha_columna] <= fecha_fin_dt)
+        ]
+        add_log(f"Filtrado por rango: {fecha_inicio} a {fecha_fin}")
+        st.success(f"✅ Filtrado por rango {fecha_inicio} a {fecha_fin}. Registros: {registros_originales} → {len(df_filtrado)}")
+    
+    else:
+        st.info("ℹ️ No se aplicó ningún filtro de fecha.")
+        return df
+    
+    return df_filtrado
+
 # --- FUNCIONES DE TRATAMIENTO ---
 def aplicar_tratamientos(df, opciones, protegidas):
     df_tratado = df.copy()
@@ -191,6 +275,82 @@ if archivo:
             ["Eliminar duplicados", "Eliminar espacios extra", "Normalizar encabezados",
              "Rellenar nulos", "Eliminar acentos", "Texto a minúsculas", "Eliminar outliers"]
         )
+
+        # --- NUEVA SECCIÓN: FILTRADO POR FECHAS ---
+        st.sidebar.subheader("📅 Filtrado por Fechas")
+        
+        # Detectar columnas de fecha automáticamente
+        columnas_fecha = []
+        if st.session_state.processed_df is not None:
+            # Buscar columnas que sean datetime
+            columnas_datetime = st.session_state.processed_df.select_dtypes(include=['datetime64']).columns.tolist()
+            # Buscar columnas que parezcan fechas
+            columnas_posibles = []
+            for col in st.session_state.processed_df.columns:
+                if col not in columnas_datetime:
+                    try:
+                        pd.to_datetime(st.session_state.processed_df[col].head(100), errors='raise')
+                        columnas_posibles.append(col)
+                    except:
+                        pass
+            
+            columnas_fecha = columnas_datetime + columnas_posibles
+        
+        if columnas_fecha:
+            fecha_columna = st.sidebar.selectbox(
+                "Seleccionar columna de fecha:",
+                columnas_fecha,
+                help="Selecciona la columna que contiene las fechas a filtrar"
+            )
+            
+            filtro_tipo = st.sidebar.selectbox(
+                "Tipo de filtro:",
+                ["ninguno", "año", "mes", "rango"],
+                help="Selecciona el tipo de filtro a aplicar"
+            )
+            
+            año = None
+            mes = None
+            fecha_inicio = None
+            fecha_fin = None
+            
+            if filtro_tipo == "año":
+                # Obtener años disponibles
+                try:
+                    df_temp = st.session_state.processed_df.copy()
+                    df_temp[fecha_columna] = pd.to_datetime(df_temp[fecha_columna])
+                    años_disponibles = sorted(df_temp[fecha_columna].dt.year.dropna().unique())
+                    año = st.sidebar.selectbox("Seleccionar año:", años_disponibles)
+                except:
+                    st.sidebar.warning("No se pudieron obtener los años disponibles")
+            
+            elif filtro_tipo == "mes":
+                mes = st.sidebar.selectbox(
+                    "Seleccionar mes:",
+                    range(1, 13),
+                    format_func=lambda x: datetime(2023, x, 1).strftime("%B")
+                )
+            
+            elif filtro_tipo == "rango":
+                col1, col2 = st.sidebar.columns(2)
+                with col1:
+                    fecha_inicio = st.date_input("Fecha inicio:")
+                with col2:
+                    fecha_fin = st.date_input("Fecha fin:")
+            
+            if st.sidebar.button("🔍 Aplicar filtro de fechas"):
+                if filtro_tipo != "ninguno":
+                    st.session_state.processed_df = filtrar_por_fechas(
+                        st.session_state.processed_df,
+                        fecha_columna=fecha_columna,
+                        filtro_tipo=filtro_tipo,
+                        año=año,
+                        mes=mes,
+                        fecha_inicio=fecha_inicio,
+                        fecha_fin=fecha_fin
+                    )
+        else:
+            st.sidebar.info("ℹ️ No se detectaron columnas de fecha en el dataset")
 
         # --- BOTONES DE ACCIÓN ---
         if st.sidebar.button("🚀 Iniciar tratamiento"):
