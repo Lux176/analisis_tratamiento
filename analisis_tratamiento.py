@@ -257,8 +257,18 @@ if archivo:
              "Rellenar nulos", "Eliminar acentos", "Texto a minúsculas", "Eliminar outliers"]
         )
 
-        # --- NUEVA SECCIÓN: FILTRADO POR FECHAS ---
+        # --- BOTONES DE ACCIÓN ---
+        if st.sidebar.button("🚀 Iniciar tratamiento"):
+            st.session_state.processed_df = aplicar_tratamientos(
+                st.session_state.processed_df, opciones, protegidas
+            )
+
+        if st.sidebar.button("🔄 Restaurar archivo original"):
+            restaurar_archivo()
+
+        # --- NUEVA SECCIÓN: FILTRADO POR FECHAS (DESPUÉS DEL TRATAMIENTO) ---
         st.sidebar.subheader("📅 Filtrado por Fechas")
+        st.sidebar.info("ℹ️ Aplica este filtro después del tratamiento")
         
         if st.session_state.processed_df is not None:
             # Permitir selección manual de todas las columnas
@@ -270,7 +280,7 @@ if archivo:
             
             # Mostrar información sobre la columna seleccionada
             if fecha_columna:
-                col_info = st.session_state.processed_df[fecha_columna].head(5).tolist()
+                col_info = st.session_state.processed_df[fecha_columna].head(3).tolist()
                 st.sidebar.info(f"📋 Primeros valores: {col_info}")
             
             filtro_tipo = st.sidebar.selectbox(
@@ -324,15 +334,6 @@ if archivo:
                     )
                 else:
                     st.sidebar.warning("Selecciona un tipo de filtro")
-
-        # --- BOTONES DE ACCIÓN ---
-        if st.sidebar.button("🚀 Iniciar tratamiento"):
-            st.session_state.processed_df = aplicar_tratamientos(
-                st.session_state.processed_df, opciones, protegidas
-            )
-
-        if st.sidebar.button("🔄 Restaurar archivo original"):
-            restaurar_archivo()
 
         # --- DESCARGA DE RESULTADOS ---
         st.sidebar.subheader("📤 Exportar resultados")
