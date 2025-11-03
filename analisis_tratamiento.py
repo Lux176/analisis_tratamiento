@@ -41,7 +41,7 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # --- GIF DE BIENVENIDA (DESAPARECE EN 3s) ---
-GIF_URL = "https://media.giphy.com/media/v1.Y2lkPTc5MGI3NjExM28yOTZ1Zmg0cG4wem14ZmNuM3YzcjFydG5pdTZreHVtZjIwYWRhbyZlcD12MV9naWZzX3NlYXJjaCZjdD1n/tIeCLkB8geYtW/giphy.gif"
+GIF_URL = "https://media.giphy.com/media/v1.Y2lkPTc5MGI3NjExM28yOTZ1Zmg0cG4wem14ZmNuM3YzcjFydG5pdTZreHVtZjIwYWRhaoZlcD12MV9naWZzX3NlYXJjaCZjdD1n/tIeCLkB8geYtW/giphy.gif"
 st.markdown(
     f"""
     <div id="gif-container" style="text-align: center;">
@@ -66,8 +66,6 @@ if "processed_df" not in st.session_state:
     st.session_state.processed_df = None
 if "log" not in st.session_state:
     st.session_state.log = []
-if "filtro_aplicado" not in st.session_state:
-    st.session_state.filtro_aplicado = False
 
 # --- FUNCIÓN DE LOG ---
 def add_log(message):
@@ -95,7 +93,6 @@ def cargar_archivo(archivo):
 def restaurar_archivo():
     if st.session_state.original_df is not None:
         st.session_state.processed_df = st.session_state.original_df.copy()
-        st.session_state.filtro_aplicado = False
         add_log("Archivo restaurado al estado original.")
         st.success("✅ Archivo restaurado exitosamente.")
     else:
@@ -126,34 +123,16 @@ def mostrar_info_fechas(df, fecha_columna):
             fecha_max = df_temp['fecha_convertida'].max()
             info_text += f"\n- 📅 Rango: {fecha_min.strftime('%Y-%m-%d')} a {fecha_max.strftime('%Y-%m-%d')}"
         
-        st.sidebar.info(info_text)
+        return info_text, fechas_invalidas
         
-        # Mostrar ejemplos de valores problemáticos
-        if fechas_invalidas > 0:
-            ejemplos_invalidos = df_temp[df_temp['fecha_convertida'].isna()][fecha_columna].head(3).tolist()
-            st.sidebar.warning(f"**Valores problemáticos:** {ejemplos_invalidos}")
-            
     except Exception as e:
-        st.sidebar.error(f"Error al analizar fechas: {e}")
+        return f"Error al analizar fechas: {e}", 0
 
-# --- NUEVA FUNCIÓN: FILTRADO POR FECHAS MEJORADA ---
-def filtrar_por_fechas(df, fecha_columna=None, filtro_tipo=None, año=None, mes=None, fecha_inicio=None, fecha_fin=None):
+# --- FUNCIÓN MEJORADA: FILTRADO POR FECHAS PARA DESCARGA ---
+def aplicar_filtro_fechas_descarga(df, fecha_columna, filtro_tipo, año=None, mes=None, fecha_inicio=None, fecha_fin=None):
     """
-    Filtra el DataFrame por criterios de fecha
-    
-    Parámetros:
-    - df: DataFrame a filtrar
-    - fecha_columna: nombre de la columna de fecha
-    - filtro_tipo: tipo de filtro ('año', 'mes', 'rango')
-    - año: año específico a filtrar
-    - mes: mes específico a filtrar
-    - fecha_inicio: fecha de inicio para rango
-    - fecha_fin: fecha de fin para rango
-    
-    Retorna:
-    - DataFrame filtrado
+    Aplica filtro de fechas solo para la descarga sin modificar el DataFrame original
     """
-    
     if df is None or df.empty:
         st.warning("⚠️ No hay datos para filtrar.")
         return df
@@ -163,11 +142,11 @@ def filtrar_por_fechas(df, fecha_columna=None, filtro_tipo=None, año=None, mes=
         st.error(f"❌ La columna '{fecha_columna}' no existe en el dataset.")
         return df
     
-    # Convertir a datetime manejando errores y fechas antiguas
+    # Convertir a datetime manejando errores
     try:
         df_filtrado = df.copy()
         
-        # Primero intentar conversión directa
+        # Crear columna temporal para el filtrado
         df_filtrado['fecha_temporal'] = pd.to_datetime(df_filtrado[fecha_columna], errors='coerce')
         
         # Verificar si hay valores nulos después de la conversión
@@ -175,57 +154,30 @@ def filtrar_por_fechas(df, fecha_columna=None, filtro_tipo=None, año=None, mes=
         total_registros = len(df_filtrado)
         
         if nulos_count > 0:
-            st.warning(f"⚠️ {nulos_count} de {total_registros} registros no pudieron convertirse a fecha y serán excluidos del filtrado")
+            st.warning(f"⚠️ {nulos_count} de {total_registros} registros no pudieron convertirse a fecha y serán excluidos")
             
         # Filtrar solo los registros con fechas válidas
         df_filtrado = df_filtrado.dropna(subset=['fecha_temporal'])
         
-        # Verificar que quedan registros después del filtrado
         if len(df_filtrado) == 0:
             st.error("❌ No hay registros con fechas válidas después de la conversión.")
             return df
             
     except Exception as e:
-        st.error(f"❌ Error al procesar la columna '{fecha_columna}': {e}")
-        # Intentar método alternativo para fechas problemáticas
-        try:
-            st.info("🔄 Intentando método alternativo de conversión...")
-            df_filtrado = df.copy()
-            # Usar dayfirst=True para formato día/mes/año
-            df_filtrado['fecha_temporal'] = pd.to_datetime(
-                df_filtrado[fecha_columna], 
-                errors='coerce', 
-                dayfirst=True
-            )
-            df_filtrado = df_filtrado.dropna(subset=['fecha_temporal'])
-            
-            if len(df_filtrado) == 0:
-                st.error("❌ No se pudieron convertir las fechas con ningún método.")
-                return df
-                
-        except Exception as e2:
-            st.error(f"❌ Error crítico en conversión de fechas: {e2}")
-            return df
+        st.error(f"❌ Error al procesar fechas: {e}")
+        return df
     
     # Aplicar filtros según el tipo seleccionado
-    registros_originales = len(df)
     registros_validos = len(df_filtrado)
-    
-    if registros_validos < registros_originales:
-        st.info(f"📊 Usando {registros_validos} de {registros_originales} registros (fechas válidas)")
     
     if filtro_tipo == "año" and año:
         df_filtrado = df_filtrado[df_filtrado['fecha_temporal'].dt.year == año]
-        add_log(f"Filtrado por año: {año}")
-        st.success(f"✅ Filtrado por año {año}. Registros: {registros_validos} → {len(df_filtrado)}")
-        st.session_state.filtro_aplicado = True
+        st.success(f"✅ Descargando datos del año {año}. Registros: {registros_validos} → {len(df_filtrado)}")
         
     elif filtro_tipo == "mes" and mes:
         df_filtrado = df_filtrado[df_filtrado['fecha_temporal'].dt.month == mes]
         nombre_mes = datetime(2023, mes, 1).strftime("%B")
-        add_log(f"Filtrado por mes: {nombre_mes}")
-        st.success(f"✅ Filtrado por mes {nombre_mes}. Registros: {registros_validos} → {len(df_filtrado)}")
-        st.session_state.filtro_aplicado = True
+        st.success(f"✅ Descargando datos del mes {nombre_mes}. Registros: {registros_validos} → {len(df_filtrado)}")
         
     elif filtro_tipo == "rango" and fecha_inicio and fecha_fin:
         fecha_inicio_dt = pd.to_datetime(fecha_inicio)
@@ -234,16 +186,7 @@ def filtrar_por_fechas(df, fecha_columna=None, filtro_tipo=None, año=None, mes=
             (df_filtrado['fecha_temporal'] >= fecha_inicio_dt) & 
             (df_filtrado['fecha_temporal'] <= fecha_fin_dt)
         ]
-        add_log(f"Filtrado por rango: {fecha_inicio} a {fecha_fin}")
-        st.success(f"✅ Filtrado por rango {fecha_inicio} a {fecha_fin}. Registros: {registros_validos} → {len(df_filtrado)}")
-        st.session_state.filtro_aplicado = True
-    
-    else:
-        st.info("ℹ️ No se aplicó ningún filtro de fecha.")
-        # Mantener la columna temporal para futuros filtros
-        df_filtrado = df_filtrado.drop(columns=['fecha_temporal'])
-        st.session_state.filtro_aplicado = False
-        return df_filtrado
+        st.success(f"✅ Descargando datos del rango {fecha_inicio} a {fecha_fin}. Registros: {registros_validos} → {len(df_filtrado)}")
     
     # Eliminar la columna temporal antes de retornar
     df_filtrado = df_filtrado.drop(columns=['fecha_temporal'])
@@ -348,136 +291,144 @@ if archivo:
             st.session_state.processed_df = aplicar_tratamientos(
                 st.session_state.processed_df, opciones, protegidas
             )
-            st.session_state.filtro_aplicado = False  # Resetear filtro al aplicar tratamiento
 
         if st.sidebar.button("🔄 Restaurar archivo original"):
             restaurar_archivo()
 
-        # --- NUEVA SECCIÓN: FILTRADO POR FECHAS (DESPUÉS DEL TRATAMIENTO) ---
-        st.sidebar.subheader("📅 Filtrado por Fechas")
-        st.sidebar.info("ℹ️ Aplica este filtro después del tratamiento")
-        
-        if st.session_state.processed_df is not None:
-            # Permitir selección manual de todas las columnas
-            fecha_columna = st.sidebar.selectbox(
-                "Seleccionar columna de fecha:",
-                st.session_state.processed_df.columns,
-                help="Selecciona manualmente la columna que contiene las fechas"
-            )
-            
-            if fecha_columna:
-                # Mostrar información detallada de las fechas
-                mostrar_info_fechas(st.session_state.processed_df, fecha_columna)
-                
-                # Mostrar primeros valores para referencia
-                col_info = st.session_state.processed_df[fecha_columna].head(3).tolist()
-                st.sidebar.info(f"**Primeros valores:** {col_info}")
-            
-            filtro_tipo = st.sidebar.selectbox(
-                "Tipo de filtro:",
-                ["ninguno", "año", "mes", "rango"],
-                help="Selecciona el tipo de filtro a aplicar"
-            )
-            
-            año = None
-            mes = None
-            fecha_inicio = None
-            fecha_fin = None
-            
-            if filtro_tipo == "año":
-                # Intentar obtener años disponibles de la columna seleccionada
-                try:
-                    df_temp = st.session_state.processed_df.copy()
-                    df_temp['fecha_temp'] = pd.to_datetime(df_temp[fecha_columna], errors='coerce')
-                    df_temp = df_temp.dropna(subset=['fecha_temp'])
-                    años_disponibles = sorted(df_temp['fecha_temp'].dt.year.dropna().unique())
-                    if años_disponibles:
-                        año = st.sidebar.selectbox("Seleccionar año:", años_disponibles)
-                    else:
-                        st.sidebar.warning("No se pudieron obtener años válidos de esta columna")
-                except Exception as e:
-                    st.sidebar.warning(f"No se pueden obtener años: {e}")
-            
-            elif filtro_tipo == "mes":
-                mes = st.sidebar.selectbox(
-                    "Seleccionar mes:",
-                    range(1, 13),
-                    format_func=lambda x: datetime(2023, x, 1).strftime("%B")
-                )
-            
-            elif filtro_tipo == "rango":
-                col1, col2 = st.sidebar.columns(2)
-                with col1:
-                    fecha_inicio = st.date_input("Fecha inicio:")
-                with col2:
-                    fecha_fin = st.date_input("Fecha fin:")
-            
-            if st.sidebar.button("🔍 Aplicar filtro de fechas"):
-                if filtro_tipo != "ninguno":
-                    df_filtrado = filtrar_por_fechas(
-                        st.session_state.processed_df,
-                        fecha_columna=fecha_columna,
-                        filtro_tipo=filtro_tipo,
-                        año=año,
-                        mes=mes,
-                        fecha_inicio=fecha_inicio,
-                        fecha_fin=fecha_fin
-                    )
-                    # Actualizar el DataFrame procesado con el filtro aplicado
-                    st.session_state.processed_df = df_filtrado
-                else:
-                    st.sidebar.warning("Selecciona un tipo de filtro")
-
-        # --- DESCARGA DE RESULTADOS ---
+        # --- SECCIÓN DE DESCARGA CON FILTRO DE FECHAS INTEGRADO ---
         st.sidebar.subheader("📤 Exportar resultados")
-        formato = st.sidebar.selectbox("Formato de exportación", ["xlsx", "csv", "json", "parquet"])
         
-        # Mostrar información sobre el estado actual del DataFrame
         if st.session_state.processed_df is not None:
+            # Mostrar información general
             total_registros = len(st.session_state.processed_df)
-            if st.session_state.filtro_aplicado:
-                st.sidebar.success(f"📊 {total_registros} registros listos para descargar (con filtro aplicado)")
-            else:
-                st.sidebar.info(f"📊 {total_registros} registros listos para descargar")
-        
-        if st.sidebar.button("💾 Descargar archivo procesado"):
-            if st.session_state.processed_df is not None and len(st.session_state.processed_df) > 0:
-                buffer = io.BytesIO()
-                df_export = st.session_state.processed_df
-
-                if formato == "xlsx":
-                    df_export.to_excel(buffer, index=False)
-                    mime = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-                    filename = "datos_procesados.xlsx"
-                elif formato == "csv":
-                    df_export.to_csv(buffer, index=False)
-                    mime = "text/csv"
-                    filename = "datos_procesados.csv"
-                elif formato == "json":
-                    df_export.to_json(buffer, orient="records")
-                    mime = "application/json"
-                    filename = "datos_procesados.json"
-                else:
-                    df_export.to_parquet(buffer, index=False)
-                    mime = "application/octet-stream"
-                    filename = "datos_procesados.parquet"
-
-                # Crear el botón de descarga
-                st.download_button(
-                    label="⬇️ Descargar archivo",
-                    data=buffer.getvalue(),
-                    file_name=filename,
-                    mime=mime,
-                    key="descarga_principal"
+            st.sidebar.info(f"📊 Total de registros procesados: {total_registros}")
+            
+            # Opciones de formato
+            formato = st.sidebar.selectbox("Formato de exportación", ["xlsx", "csv", "json", "parquet"])
+            
+            # Opción de filtro para descarga
+            st.sidebar.subheader("📅 Filtro para descarga")
+            aplicar_filtro = st.sidebar.radio(
+                "¿Deseas aplicar filtro de fechas?",
+                ["Descargar sin filtro", "Aplicar filtro de fechas"]
+            )
+            
+            df_para_descargar = st.session_state.processed_df.copy()
+            mensaje_descarga = f"Descargando {total_registros} registros"
+            
+            if aplicar_filtro == "Aplicar filtro de fechas":
+                # Selección de columna de fecha
+                fecha_columna = st.sidebar.selectbox(
+                    "Seleccionar columna de fecha:",
+                    st.session_state.processed_df.columns,
+                    help="Selecciona la columna que contiene las fechas"
                 )
-                add_log(f"Archivo exportado como {formato} con {len(df_export)} registros")
-            else:
-                st.error("❌ No hay datos para descargar")
+                
+                if fecha_columna:
+                    # Mostrar información de fechas
+                    info_fechas, invalidas = mostrar_info_fechas(st.session_state.processed_df, fecha_columna)
+                    st.sidebar.info(info_fechas)
+                    
+                    # Tipo de filtro
+                    filtro_tipo = st.sidebar.selectbox(
+                        "Tipo de filtro:",
+                        ["año", "mes", "rango"],
+                        help="Selecciona el tipo de filtro a aplicar"
+                    )
+                    
+                    año = None
+                    mes = None
+                    fecha_inicio = None
+                    fecha_fin = None
+                    
+                    if filtro_tipo == "año":
+                        # Obtener años disponibles
+                        try:
+                            df_temp = st.session_state.processed_df.copy()
+                            df_temp['fecha_temp'] = pd.to_datetime(df_temp[fecha_columna], errors='coerce')
+                            df_temp = df_temp.dropna(subset=['fecha_temp'])
+                            años_disponibles = sorted(df_temp['fecha_temp'].dt.year.dropna().unique())
+                            if años_disponibles:
+                                año = st.sidebar.selectbox("Seleccionar año:", años_disponibles)
+                            else:
+                                st.sidebar.warning("No se pudieron obtener años válidos")
+                        except Exception as e:
+                            st.sidebar.warning(f"No se pueden obtener años: {e}")
+                    
+                    elif filtro_tipo == "mes":
+                        mes = st.sidebar.selectbox(
+                            "Seleccionar mes:",
+                            range(1, 13),
+                            format_func=lambda x: datetime(2023, x, 1).strftime("%B")
+                        )
+                    
+                    elif filtro_tipo == "rango":
+                        col1, col2 = st.sidebar.columns(2)
+                        with col1:
+                            fecha_inicio = st.date_input("Fecha inicio:")
+                        with col2:
+                            fecha_fin = st.date_input("Fecha fin:")
+                    
+                    # Aplicar filtro para la descarga
+                    if año or mes or (fecha_inicio and fecha_fin):
+                        df_para_descargar = aplicar_filtro_fechas_descarga(
+                            st.session_state.processed_df,
+                            fecha_columna,
+                            filtro_tipo,
+                            año,
+                            mes,
+                            fecha_inicio,
+                            fecha_fin
+                        )
+                        mensaje_descarga = f"Descargando {len(df_para_descargar)} registros (con filtro aplicado)"
+            
+            # Botón de descarga
+            st.sidebar.markdown("---")
+            st.sidebar.info(mensaje_descarga)
+            
+            if st.sidebar.button("💾 Generar archivo para descarga"):
+                if len(df_para_descargar) > 0:
+                    buffer = io.BytesIO()
+                    
+                    if formato == "xlsx":
+                        df_para_descargar.to_excel(buffer, index=False)
+                        mime = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                        filename = "datos_procesados.xlsx"
+                    elif formato == "csv":
+                        df_para_descargar.to_csv(buffer, index=False)
+                        mime = "text/csv"
+                        filename = "datos_procesados.csv"
+                    elif formato == "json":
+                        df_para_descargar.to_json(buffer, orient="records")
+                        mime = "application/json"
+                        filename = "datos_procesados.json"
+                    else:
+                        df_para_descargar.to_parquet(buffer, index=False)
+                        mime = "application/octet-stream"
+                        filename = "datos_procesados.parquet"
+
+                    # Crear el botón de descarga
+                    st.sidebar.download_button(
+                        label="⬇️ Descargar archivo",
+                        data=buffer.getvalue(),
+                        file_name=filename,
+                        mime=mime,
+                        key="descarga_principal"
+                    )
+                    
+                    # Registrar en el log
+                    if aplicar_filtro == "Aplicar filtro de fechas":
+                        add_log(f"Archivo exportado como {formato} con {len(df_para_descargar)} registros (filtro aplicado)")
+                    else:
+                        add_log(f"Archivo exportado como {formato} con {len(df_para_descargar)} registros")
+                else:
+                    st.sidebar.error("❌ No hay datos para descargar")
 
         # --- DESCARGA DEL LOG ---
+        st.sidebar.subheader("📝 Registro de operaciones")
         if st.sidebar.button("🧾 Descargar log de operaciones"):
             log_txt = "\n".join(st.session_state.log)
-            st.download_button(
+            st.sidebar.download_button(
                 "⬇️ Descargar log",
                 data=log_txt,
                 file_name="registro_operaciones.txt",
@@ -489,7 +440,6 @@ if archivo:
             st.session_state.original_df = None
             st.session_state.processed_df = None
             st.session_state.log = []
-            st.session_state.filtro_aplicado = False
             st.experimental_rerun()
 
 else:
