@@ -66,6 +66,8 @@ if "processed_df" not in st.session_state:
     st.session_state.processed_df = None
 if "log" not in st.session_state:
     st.session_state.log = []
+if "filtro_aplicado" not in st.session_state:
+    st.session_state.filtro_aplicado = False
 
 # --- FUNCIÓN DE LOG ---
 def add_log(message):
@@ -93,6 +95,7 @@ def cargar_archivo(archivo):
 def restaurar_archivo():
     if st.session_state.original_df is not None:
         st.session_state.processed_df = st.session_state.original_df.copy()
+        st.session_state.filtro_aplicado = False
         add_log("Archivo restaurado al estado original.")
         st.success("✅ Archivo restaurado exitosamente.")
     else:
@@ -215,12 +218,14 @@ def filtrar_por_fechas(df, fecha_columna=None, filtro_tipo=None, año=None, mes=
         df_filtrado = df_filtrado[df_filtrado['fecha_temporal'].dt.year == año]
         add_log(f"Filtrado por año: {año}")
         st.success(f"✅ Filtrado por año {año}. Registros: {registros_validos} → {len(df_filtrado)}")
+        st.session_state.filtro_aplicado = True
         
     elif filtro_tipo == "mes" and mes:
         df_filtrado = df_filtrado[df_filtrado['fecha_temporal'].dt.month == mes]
         nombre_mes = datetime(2023, mes, 1).strftime("%B")
         add_log(f"Filtrado por mes: {nombre_mes}")
         st.success(f"✅ Filtrado por mes {nombre_mes}. Registros: {registros_validos} → {len(df_filtrado)}")
+        st.session_state.filtro_aplicado = True
         
     elif filtro_tipo == "rango" and fecha_inicio and fecha_fin:
         fecha_inicio_dt = pd.to_datetime(fecha_inicio)
@@ -231,11 +236,13 @@ def filtrar_por_fechas(df, fecha_columna=None, filtro_tipo=None, año=None, mes=
         ]
         add_log(f"Filtrado por rango: {fecha_inicio} a {fecha_fin}")
         st.success(f"✅ Filtrado por rango {fecha_inicio} a {fecha_fin}. Registros: {registros_validos} → {len(df_filtrado)}")
+        st.session_state.filtro_aplicado = True
     
     else:
         st.info("ℹ️ No se aplicó ningún filtro de fecha.")
         # Mantener la columna temporal para futuros filtros
         df_filtrado = df_filtrado.drop(columns=['fecha_temporal'])
+        st.session_state.filtro_aplicado = False
         return df_filtrado
     
     # Eliminar la columna temporal antes de retornar
@@ -341,6 +348,7 @@ if archivo:
             st.session_state.processed_df = aplicar_tratamientos(
                 st.session_state.processed_df, opciones, protegidas
             )
+            st.session_state.filtro_aplicado = False  # Resetear filtro al aplicar tratamiento
 
         if st.sidebar.button("🔄 Restaurar archivo original"):
             restaurar_archivo()
@@ -406,7 +414,7 @@ if archivo:
             
             if st.sidebar.button("🔍 Aplicar filtro de fechas"):
                 if filtro_tipo != "ninguno":
-                    st.session_state.processed_df = filtrar_por_fechas(
+                    df_filtrado = filtrar_por_fechas(
                         st.session_state.processed_df,
                         fecha_columna=fecha_columna,
                         filtro_tipo=filtro_tipo,
@@ -415,35 +423,56 @@ if archivo:
                         fecha_inicio=fecha_inicio,
                         fecha_fin=fecha_fin
                     )
+                    # Actualizar el DataFrame procesado con el filtro aplicado
+                    st.session_state.processed_df = df_filtrado
                 else:
                     st.sidebar.warning("Selecciona un tipo de filtro")
 
         # --- DESCARGA DE RESULTADOS ---
         st.sidebar.subheader("📤 Exportar resultados")
         formato = st.sidebar.selectbox("Formato de exportación", ["xlsx", "csv", "json", "parquet"])
-        if st.sidebar.button("💾 Descargar archivo procesado"):
-            buffer = io.BytesIO()
-            df_export = st.session_state.processed_df
-
-            if formato == "xlsx":
-                df_export.to_excel(buffer, index=False)
-                mime = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-                filename = "datos_procesados.xlsx"
-            elif formato == "csv":
-                df_export.to_csv(buffer, index=False)
-                mime = "text/csv"
-                filename = "datos_procesados.csv"
-            elif formato == "json":
-                df_export.to_json(buffer, orient="records")
-                mime = "application/json"
-                filename = "datos_procesados.json"
+        
+        # Mostrar información sobre el estado actual del DataFrame
+        if st.session_state.processed_df is not None:
+            total_registros = len(st.session_state.processed_df)
+            if st.session_state.filtro_aplicado:
+                st.sidebar.success(f"📊 {total_registros} registros listos para descargar (con filtro aplicado)")
             else:
-                df_export.to_parquet(buffer, index=False)
-                mime = "application/octet-stream"
-                filename = "datos_procesados.parquet"
+                st.sidebar.info(f"📊 {total_registros} registros listos para descargar")
+        
+        if st.sidebar.button("💾 Descargar archivo procesado"):
+            if st.session_state.processed_df is not None and len(st.session_state.processed_df) > 0:
+                buffer = io.BytesIO()
+                df_export = st.session_state.processed_df
 
-            st.download_button("⬇️ Descargar", buffer.getvalue(), file_name=filename, mime=mime)
-            add_log(f"Archivo exportado como {formato}")
+                if formato == "xlsx":
+                    df_export.to_excel(buffer, index=False)
+                    mime = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                    filename = "datos_procesados.xlsx"
+                elif formato == "csv":
+                    df_export.to_csv(buffer, index=False)
+                    mime = "text/csv"
+                    filename = "datos_procesados.csv"
+                elif formato == "json":
+                    df_export.to_json(buffer, orient="records")
+                    mime = "application/json"
+                    filename = "datos_procesados.json"
+                else:
+                    df_export.to_parquet(buffer, index=False)
+                    mime = "application/octet-stream"
+                    filename = "datos_procesados.parquet"
+
+                # Crear el botón de descarga
+                st.download_button(
+                    label="⬇️ Descargar archivo",
+                    data=buffer.getvalue(),
+                    file_name=filename,
+                    mime=mime,
+                    key="descarga_principal"
+                )
+                add_log(f"Archivo exportado como {formato} con {len(df_export)} registros")
+            else:
+                st.error("❌ No hay datos para descargar")
 
         # --- DESCARGA DEL LOG ---
         if st.sidebar.button("🧾 Descargar log de operaciones"):
@@ -460,6 +489,7 @@ if archivo:
             st.session_state.original_df = None
             st.session_state.processed_df = None
             st.session_state.log = []
+            st.session_state.filtro_aplicado = False
             st.experimental_rerun()
 
 else:
