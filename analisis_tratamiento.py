@@ -120,25 +120,6 @@ def filtrar_por_fechas(df, fecha_columna=None, filtro_tipo=None, año=None, mes=
         st.warning("⚠️ No hay datos para filtrar.")
         return df
     
-    # Buscar automáticamente columnas de fecha si no se especifica
-    if fecha_columna is None:
-        columnas_fecha = df.select_dtypes(include=['datetime64', 'datetime64[ns]']).columns
-        if len(columnas_fecha) == 0:
-            # Intentar convertir columnas que parezcan fechas
-            for col in df.columns:
-                try:
-                    pd.to_datetime(df[col], errors='raise')
-                    columnas_fecha = [col]
-                    break
-                except:
-                    continue
-        if len(columnas_fecha) > 0:
-            fecha_columna = columnas_fecha[0]
-            st.info(f"🔍 Columna de fecha detectada automáticamente: '{fecha_columna}'")
-        else:
-            st.error("❌ No se encontraron columnas de fecha en el dataset.")
-            return df
-    
     # Verificar que la columna de fecha existe
     if fecha_columna not in df.columns:
         st.error(f"❌ La columna '{fecha_columna}' no existe en el dataset.")
@@ -279,29 +260,18 @@ if archivo:
         # --- NUEVA SECCIÓN: FILTRADO POR FECHAS ---
         st.sidebar.subheader("📅 Filtrado por Fechas")
         
-        # Detectar columnas de fecha automáticamente
-        columnas_fecha = []
         if st.session_state.processed_df is not None:
-            # Buscar columnas que sean datetime
-            columnas_datetime = st.session_state.processed_df.select_dtypes(include=['datetime64']).columns.tolist()
-            # Buscar columnas que parezcan fechas
-            columnas_posibles = []
-            for col in st.session_state.processed_df.columns:
-                if col not in columnas_datetime:
-                    try:
-                        pd.to_datetime(st.session_state.processed_df[col].head(100), errors='raise')
-                        columnas_posibles.append(col)
-                    except:
-                        pass
-            
-            columnas_fecha = columnas_datetime + columnas_posibles
-        
-        if columnas_fecha:
+            # Permitir selección manual de todas las columnas
             fecha_columna = st.sidebar.selectbox(
                 "Seleccionar columna de fecha:",
-                columnas_fecha,
-                help="Selecciona la columna que contiene las fechas a filtrar"
+                st.session_state.processed_df.columns,
+                help="Selecciona manualmente la columna que contiene las fechas"
             )
+            
+            # Mostrar información sobre la columna seleccionada
+            if fecha_columna:
+                col_info = st.session_state.processed_df[fecha_columna].head(5).tolist()
+                st.sidebar.info(f"📋 Primeros valores: {col_info}")
             
             filtro_tipo = st.sidebar.selectbox(
                 "Tipo de filtro:",
@@ -315,14 +285,17 @@ if archivo:
             fecha_fin = None
             
             if filtro_tipo == "año":
-                # Obtener años disponibles
+                # Intentar obtener años disponibles de la columna seleccionada
                 try:
                     df_temp = st.session_state.processed_df.copy()
                     df_temp[fecha_columna] = pd.to_datetime(df_temp[fecha_columna])
                     años_disponibles = sorted(df_temp[fecha_columna].dt.year.dropna().unique())
-                    año = st.sidebar.selectbox("Seleccionar año:", años_disponibles)
-                except:
-                    st.sidebar.warning("No se pudieron obtener los años disponibles")
+                    if años_disponibles:
+                        año = st.sidebar.selectbox("Seleccionar año:", años_disponibles)
+                    else:
+                        st.sidebar.warning("No se pudieron obtener años de esta columna")
+                except Exception as e:
+                    st.sidebar.warning(f"Esta columna no parece contener fechas válidas")
             
             elif filtro_tipo == "mes":
                 mes = st.sidebar.selectbox(
@@ -349,8 +322,8 @@ if archivo:
                         fecha_inicio=fecha_inicio,
                         fecha_fin=fecha_fin
                     )
-        else:
-            st.sidebar.info("ℹ️ No se detectaron columnas de fecha en el dataset")
+                else:
+                    st.sidebar.warning("Selecciona un tipo de filtro")
 
         # --- BOTONES DE ACCIÓN ---
         if st.sidebar.button("🚀 Iniciar tratamiento"):
