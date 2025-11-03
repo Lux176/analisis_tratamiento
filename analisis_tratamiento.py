@@ -98,7 +98,42 @@ def restaurar_archivo():
     else:
         st.warning("⚠️ No hay archivo cargado para restaurar.")
 
-# --- NUEVA FUNCIÓN: FILTRADO POR FECHAS ---
+# --- FUNCIÓN ADICIONAL: PREVISUALIZACIÓN MEJORADA DE FECHAS ---
+def mostrar_info_fechas(df, fecha_columna):
+    """
+    Muestra información detallada sobre la columna de fechas
+    """
+    try:
+        # Crear una copia para análisis
+        df_temp = df.copy()
+        df_temp['fecha_convertida'] = pd.to_datetime(df_temp[fecha_columna], errors='coerce')
+        
+        fechas_validas = df_temp['fecha_convertida'].notna().sum()
+        fechas_invalidas = df_temp['fecha_convertida'].isna().sum()
+        total_registros = len(df_temp)
+        
+        info_text = f"""
+        **📊 Información de fechas:**
+        - ✅ Válidas: {fechas_validas} ({fechas_validas/total_registros*100:.1f}%)
+        - ❌ Inválidas: {fechas_invalidas} ({fechas_invalidas/total_registros*100:.1f}%)
+        """
+        
+        if fechas_validas > 0:
+            fecha_min = df_temp['fecha_convertida'].min()
+            fecha_max = df_temp['fecha_convertida'].max()
+            info_text += f"\n- 📅 Rango: {fecha_min.strftime('%Y-%m-%d')} a {fecha_max.strftime('%Y-%m-%d')}"
+        
+        st.sidebar.info(info_text)
+        
+        # Mostrar ejemplos de valores problemáticos
+        if fechas_invalidas > 0:
+            ejemplos_invalidos = df_temp[df_temp['fecha_convertida'].isna()][fecha_columna].head(3).tolist()
+            st.sidebar.warning(f"**Valores problemáticos:** {ejemplos_invalidos}")
+            
+    except Exception as e:
+        st.sidebar.error(f"Error al analizar fechas: {e}")
+
+# --- NUEVA FUNCIÓN: FILTRADO POR FECHAS MEJORADA ---
 def filtrar_por_fechas(df, fecha_columna=None, filtro_tipo=None, año=None, mes=None, fecha_inicio=None, fecha_fin=None):
     """
     Filtra el DataFrame por criterios de fecha
@@ -125,42 +160,86 @@ def filtrar_por_fechas(df, fecha_columna=None, filtro_tipo=None, año=None, mes=
         st.error(f"❌ La columna '{fecha_columna}' no existe en el dataset.")
         return df
     
-    # Convertir a datetime si no lo está
+    # Convertir a datetime manejando errores y fechas antiguas
     try:
         df_filtrado = df.copy()
-        df_filtrado[fecha_columna] = pd.to_datetime(df_filtrado[fecha_columna])
+        
+        # Primero intentar conversión directa
+        df_filtrado['fecha_temporal'] = pd.to_datetime(df_filtrado[fecha_columna], errors='coerce')
+        
+        # Verificar si hay valores nulos después de la conversión
+        nulos_count = df_filtrado['fecha_temporal'].isna().sum()
+        total_registros = len(df_filtrado)
+        
+        if nulos_count > 0:
+            st.warning(f"⚠️ {nulos_count} de {total_registros} registros no pudieron convertirse a fecha y serán excluidos del filtrado")
+            
+        # Filtrar solo los registros con fechas válidas
+        df_filtrado = df_filtrado.dropna(subset=['fecha_temporal'])
+        
+        # Verificar que quedan registros después del filtrado
+        if len(df_filtrado) == 0:
+            st.error("❌ No hay registros con fechas válidas después de la conversión.")
+            return df
+            
     except Exception as e:
-        st.error(f"❌ Error al convertir la columna '{fecha_columna}' a fecha: {e}")
-        return df
+        st.error(f"❌ Error al procesar la columna '{fecha_columna}': {e}")
+        # Intentar método alternativo para fechas problemáticas
+        try:
+            st.info("🔄 Intentando método alternativo de conversión...")
+            df_filtrado = df.copy()
+            # Usar dayfirst=True para formato día/mes/año
+            df_filtrado['fecha_temporal'] = pd.to_datetime(
+                df_filtrado[fecha_columna], 
+                errors='coerce', 
+                dayfirst=True
+            )
+            df_filtrado = df_filtrado.dropna(subset=['fecha_temporal'])
+            
+            if len(df_filtrado) == 0:
+                st.error("❌ No se pudieron convertir las fechas con ningún método.")
+                return df
+                
+        except Exception as e2:
+            st.error(f"❌ Error crítico en conversión de fechas: {e2}")
+            return df
     
     # Aplicar filtros según el tipo seleccionado
-    registros_originales = len(df_filtrado)
+    registros_originales = len(df)
+    registros_validos = len(df_filtrado)
+    
+    if registros_validos < registros_originales:
+        st.info(f"📊 Usando {registros_validos} de {registros_originales} registros (fechas válidas)")
     
     if filtro_tipo == "año" and año:
-        df_filtrado = df_filtrado[df_filtrado[fecha_columna].dt.year == año]
+        df_filtrado = df_filtrado[df_filtrado['fecha_temporal'].dt.year == año]
         add_log(f"Filtrado por año: {año}")
-        st.success(f"✅ Filtrado por año {año}. Registros: {registros_originales} → {len(df_filtrado)}")
+        st.success(f"✅ Filtrado por año {año}. Registros: {registros_validos} → {len(df_filtrado)}")
         
     elif filtro_tipo == "mes" and mes:
-        df_filtrado = df_filtrado[df_filtrado[fecha_columna].dt.month == mes]
+        df_filtrado = df_filtrado[df_filtrado['fecha_temporal'].dt.month == mes]
         nombre_mes = datetime(2023, mes, 1).strftime("%B")
         add_log(f"Filtrado por mes: {nombre_mes}")
-        st.success(f"✅ Filtrado por mes {nombre_mes}. Registros: {registros_originales} → {len(df_filtrado)}")
+        st.success(f"✅ Filtrado por mes {nombre_mes}. Registros: {registros_validos} → {len(df_filtrado)}")
         
     elif filtro_tipo == "rango" and fecha_inicio and fecha_fin:
         fecha_inicio_dt = pd.to_datetime(fecha_inicio)
         fecha_fin_dt = pd.to_datetime(fecha_fin)
         df_filtrado = df_filtrado[
-            (df_filtrado[fecha_columna] >= fecha_inicio_dt) & 
-            (df_filtrado[fecha_columna] <= fecha_fin_dt)
+            (df_filtrado['fecha_temporal'] >= fecha_inicio_dt) & 
+            (df_filtrado['fecha_temporal'] <= fecha_fin_dt)
         ]
         add_log(f"Filtrado por rango: {fecha_inicio} a {fecha_fin}")
-        st.success(f"✅ Filtrado por rango {fecha_inicio} a {fecha_fin}. Registros: {registros_originales} → {len(df_filtrado)}")
+        st.success(f"✅ Filtrado por rango {fecha_inicio} a {fecha_fin}. Registros: {registros_validos} → {len(df_filtrado)}")
     
     else:
         st.info("ℹ️ No se aplicó ningún filtro de fecha.")
-        return df
+        # Mantener la columna temporal para futuros filtros
+        df_filtrado = df_filtrado.drop(columns=['fecha_temporal'])
+        return df_filtrado
     
+    # Eliminar la columna temporal antes de retornar
+    df_filtrado = df_filtrado.drop(columns=['fecha_temporal'])
     return df_filtrado
 
 # --- FUNCIONES DE TRATAMIENTO ---
@@ -278,10 +357,13 @@ if archivo:
                 help="Selecciona manualmente la columna que contiene las fechas"
             )
             
-            # Mostrar información sobre la columna seleccionada
             if fecha_columna:
+                # Mostrar información detallada de las fechas
+                mostrar_info_fechas(st.session_state.processed_df, fecha_columna)
+                
+                # Mostrar primeros valores para referencia
                 col_info = st.session_state.processed_df[fecha_columna].head(3).tolist()
-                st.sidebar.info(f"📋 Primeros valores: {col_info}")
+                st.sidebar.info(f"**Primeros valores:** {col_info}")
             
             filtro_tipo = st.sidebar.selectbox(
                 "Tipo de filtro:",
@@ -298,14 +380,15 @@ if archivo:
                 # Intentar obtener años disponibles de la columna seleccionada
                 try:
                     df_temp = st.session_state.processed_df.copy()
-                    df_temp[fecha_columna] = pd.to_datetime(df_temp[fecha_columna])
-                    años_disponibles = sorted(df_temp[fecha_columna].dt.year.dropna().unique())
+                    df_temp['fecha_temp'] = pd.to_datetime(df_temp[fecha_columna], errors='coerce')
+                    df_temp = df_temp.dropna(subset=['fecha_temp'])
+                    años_disponibles = sorted(df_temp['fecha_temp'].dt.year.dropna().unique())
                     if años_disponibles:
                         año = st.sidebar.selectbox("Seleccionar año:", años_disponibles)
                     else:
-                        st.sidebar.warning("No se pudieron obtener años de esta columna")
+                        st.sidebar.warning("No se pudieron obtener años válidos de esta columna")
                 except Exception as e:
-                    st.sidebar.warning(f"Esta columna no parece contener fechas válidas")
+                    st.sidebar.warning(f"No se pueden obtener años: {e}")
             
             elif filtro_tipo == "mes":
                 mes = st.sidebar.selectbox(
