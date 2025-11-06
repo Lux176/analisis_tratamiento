@@ -441,72 +441,55 @@ if archivo:
             st.metric("Transformaciones aplicadas", 
                      "Sí" if st.session_state.transformations_applied else "No")
 
-        # --- OPCIONES DE PROCESAMIENTO ---
-        columnas = list(st.session_state.processed_df.columns)
-        
-        # Actualizar listas para remover columnas que ya no existen
-        st.session_state.columnas_protegidas = [p for p in st.session_state.columnas_protegidas if p in columnas]
-        st.session_state.columnas_eliminar = [e for e in st.session_state.columnas_eliminar if e in columnas]
+# --- OPCIONES DE TRATAMIENTO ---
+st.sidebar.subheader("⚙️ Tratamientos disponibles")
+opciones = st.sidebar.multiselect(
+    "Selecciona tratamientos a aplicar:",
+    ["Eliminar duplicados", "Eliminar espacios extra", "Normalizar encabezados",
+     "Rellenar nulos", "Eliminar acentos", "Texto a minúsculas", "Eliminar outliers"],
+    key="multiselect_tratamientos"
+)
 
-        st.sidebar.subheader("🛡️ Protección y eliminación")
-
-        # Columnas protegidas - PERSISTENTE
-        st.session_state.columnas_protegidas = st.sidebar.multiselect(
-            "Seleccionar columnas protegidas", 
-            columnas,
-            default=st.session_state.columnas_protegidas,
-            key="multiselect_protegidas"
-        )
-
-        # Columnas a eliminar - PERSISTENTE (excluyendo las protegidas)
-        columnas_disponibles_eliminar = [c for c in columnas if c not in st.session_state.columnas_protegidas]
-        st.session_state.columnas_eliminar = st.sidebar.multiselect(
-            "Eliminar columnas", 
-            columnas_disponibles_eliminar,
-            default=st.session_state.columnas_eliminar,
-            key="multiselect_eliminar"
-        )
-
-        # --- BOTONES DE ACCIÓN ---
-        col1, col2 = st.sidebar.columns(2)
-        with col1:
-            if st.button("🚀 Iniciar tratamiento", use_container_width=True):
-                if opciones:
-                    nuevo_df = aplicar_tratamientos(
-                        st.session_state.processed_df, opciones, st.session_state.columnas_protegidas
-                    )
-                    if nuevo_df is not None:
-                        st.session_state.processed_df = nuevo_df
-                        st.rerun()
-                else:
-                    st.warning("⚠️ Selecciona al menos un tratamiento")
-        
-        with col2:
-            if st.button("🔄 Restaurar original", use_container_width=True):
-                restaurar_archivo()
+# --- BOTONES DE ACCIÓN ---
+col1, col2 = st.sidebar.columns(2)
+with col1:
+    if st.button("🚀 Iniciar tratamiento", use_container_width=True):
+        if opciones:
+            nuevo_df = aplicar_tratamientos(
+                st.session_state.processed_df, opciones, st.session_state.columnas_protegidas
+            )
+            if nuevo_df is not None:
+                st.session_state.processed_df = nuevo_df
                 st.rerun()
+        else:
+            st.warning("⚠️ Selecciona al menos un tratamiento")
 
-        # --- BOTÓN PARA ELIMINAR COLUMNAS ---
-        if st.session_state.columnas_eliminar:
-            if st.sidebar.button("🗑️ Eliminar columnas seleccionadas", type="primary", use_container_width=True):
-                columnas_a_eliminar = st.session_state.columnas_eliminar.copy()
-                
-                # Verificar que las columnas existen antes de eliminarlas
-                columnas_existentes = [col for col in columnas_a_eliminar if col in st.session_state.processed_df.columns]
-                
-                if columnas_existentes:
-                    st.session_state.processed_df = st.session_state.processed_df.drop(columns=columnas_existentes)
-                    add_log(f"Columnas eliminadas: {', '.join(columnas_existentes)}")
-                    st.success(f"🗑️ Columnas eliminadas: {', '.join(columnas_existentes)}")
-                    
-                    # Actualizar las listas de selección
-                    st.session_state.columnas_protegidas = [p for p in st.session_state.columnas_protegidas if p not in columnas_existentes]
-                    st.session_state.columnas_eliminar = []
-                    
-                    st.rerun()
-                else:
-                    st.error("❌ Las columnas seleccionadas ya no existen en el dataset")
-                    st.session_state.columnas_eliminar = []
+with col2:
+    if st.button("🔄 Restaurar original", use_container_width=True):
+        restaurar_archivo()
+        st.rerun()
+
+# --- BOTÓN PARA ELIMINAR COLUMNAS ---
+if st.session_state.columnas_eliminar:
+    if st.sidebar.button("🗑️ Eliminar columnas seleccionadas", type="primary", use_container_width=True):
+        columnas_a_eliminar = st.session_state.columnas_eliminar.copy()
+        
+        # Verificar que las columnas existen antes de eliminarlas
+        columnas_existentes = [col for col in columnas_a_eliminar if col in st.session_state.processed_df.columns]
+        
+        if columnas_existentes:
+            st.session_state.processed_df = st.session_state.processed_df.drop(columns=columnas_existentes)
+            add_log(f"Columnas eliminadas: {', '.join(columnas_existentes)}")
+            st.success(f"🗑️ Columnas eliminadas: {', '.join(columnas_existentes)}")
+            
+            # Actualizar las listas de selección
+            st.session_state.columnas_protegidas = [p for p in st.session_state.columnas_protegidas if p not in columnas_existentes]
+            st.session_state.columnas_eliminar = []
+            
+            st.rerun()
+        else:
+            st.error("❌ Las columnas seleccionadas ya no existen en el dataset")
+            st.session_state.columnas_eliminar = []
 
         # --- OPCIONES DE TRATAMIENTO ---
         st.sidebar.subheader("⚙️ Tratamientos disponibles")
