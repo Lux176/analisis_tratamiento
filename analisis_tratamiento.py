@@ -211,41 +211,6 @@ def aplicar_filtro_fechas_descarga(df, fecha_columna, filtro_tipo, año=None, me
     df_filtrado = df_filtrado.drop(columns=['fecha_temporal'])
     return df_filtrado
 
-# --- FUNCIÓN DE VERIFICACIÓN DE TRANSFORMACIONES ---
-def verificar_transformaciones(df_original, df_procesado, tratamiento):
-    """Verifica que las transformaciones se aplicaron correctamente"""
-    
-    cambios_detectados = []
-    
-    if tratamiento == "Eliminar espacios extra":
-        for col in df_procesado.select_dtypes(include=["object"]).columns:
-            if col in df_original.columns:
-                # Verificar espacios al inicio y final
-                original_con_espacios = df_original[col].astype(str).apply(
-                    lambda x: x != x.strip() if isinstance(x, str) else False
-                ).any()
-                
-                procesado_con_espacios = df_procesado[col].astype(str).apply(
-                    lambda x: x != x.strip() if isinstance(x, str) else False
-                ).any()
-                
-                if original_con_espacios and not procesado_con_espacios:
-                    cambios_detectados.append(f"✅ Espacios eliminados en columna '{col}'")
-                elif original_con_espacios and procesado_con_espacios:
-                    cambios_detectados.append(f"❌ Espacios NO eliminados en columna '{col}'")
-    
-    elif tratamiento == "Eliminar acentos":
-        for col in df_procesado.select_dtypes(include=["object"]).columns:
-            if col in df_original.columns:
-                # Verificar si hay acentos (simplificado)
-                original_str = df_original[col].astype(str).str.cat()
-                procesado_str = df_procesado[col].astype(str).str.cat()
-                
-                if original_str != procesado_str:
-                    cambios_detectados.append(f"✅ Cambios detectados en columna '{col}'")
-    
-    return cambios_detectados
-
 # --- FUNCIONES DE TRATAMIENTO COMPLETAMENTE REESCRITAS ---
 def aplicar_tratamientos(df, opciones, protegidas):
     """Aplica tratamientos de manera más robusta y verificable"""
@@ -441,55 +406,53 @@ if archivo:
             st.metric("Transformaciones aplicadas", 
                      "Sí" if st.session_state.transformations_applied else "No")
 
-# --- OPCIONES DE TRATAMIENTO ---
-st.sidebar.subheader("⚙️ Tratamientos disponibles")
-opciones = st.sidebar.multiselect(
-    "Selecciona tratamientos a aplicar:",
-    ["Eliminar duplicados", "Eliminar espacios extra", "Normalizar encabezados",
-     "Rellenar nulos", "Eliminar acentos", "Texto a minúsculas", "Eliminar outliers"],
-    key="multiselect_tratamientos"
-)
-
-# --- BOTONES DE ACCIÓN ---
-col1, col2 = st.sidebar.columns(2)
-with col1:
-    if st.button("🚀 Iniciar tratamiento", use_container_width=True):
-        if opciones:
-            nuevo_df = aplicar_tratamientos(
-                st.session_state.processed_df, opciones, st.session_state.columnas_protegidas
-            )
-            if nuevo_df is not None:
-                st.session_state.processed_df = nuevo_df
-                st.rerun()
-        else:
-            st.warning("⚠️ Selecciona al menos un tratamiento")
-
-with col2:
-    if st.button("🔄 Restaurar original", use_container_width=True):
-        restaurar_archivo()
-        st.rerun()
-
-# --- BOTÓN PARA ELIMINAR COLUMNAS ---
-if st.session_state.columnas_eliminar:
-    if st.sidebar.button("🗑️ Eliminar columnas seleccionadas", type="primary", use_container_width=True):
-        columnas_a_eliminar = st.session_state.columnas_eliminar.copy()
+        # --- OPCIONES DE PROCESAMIENTO ---
+        columnas = list(st.session_state.processed_df.columns)
         
-        # Verificar que las columnas existen antes de eliminarlas
-        columnas_existentes = [col for col in columnas_a_eliminar if col in st.session_state.processed_df.columns]
-        
-        if columnas_existentes:
-            st.session_state.processed_df = st.session_state.processed_df.drop(columns=columnas_existentes)
-            add_log(f"Columnas eliminadas: {', '.join(columnas_existentes)}")
-            st.success(f"🗑️ Columnas eliminadas: {', '.join(columnas_existentes)}")
-            
-            # Actualizar las listas de selección
-            st.session_state.columnas_protegidas = [p for p in st.session_state.columnas_protegidas if p not in columnas_existentes]
-            st.session_state.columnas_eliminar = []
-            
-            st.rerun()
-        else:
-            st.error("❌ Las columnas seleccionadas ya no existen en el dataset")
-            st.session_state.columnas_eliminar = []
+        # Actualizar listas para remover columnas que ya no existen
+        st.session_state.columnas_protegidas = [p for p in st.session_state.columnas_protegidas if p in columnas]
+        st.session_state.columnas_eliminar = [e for e in st.session_state.columnas_eliminar if e in columnas]
+
+        st.sidebar.subheader("🛡️ Protección y eliminación")
+
+        # Columnas protegidas - PERSISTENTE
+        st.session_state.columnas_protegidas = st.sidebar.multiselect(
+            "Seleccionar columnas protegidas", 
+            columnas,
+            default=st.session_state.columnas_protegidas,
+            key="multiselect_protegidas"
+        )
+
+        # Columnas a eliminar - PERSISTENTE (excluyendo las protegidas)
+        columnas_disponibles_eliminar = [c for c in columnas if c not in st.session_state.columnas_protegidas]
+        st.session_state.columnas_eliminar = st.sidebar.multiselect(
+            "Eliminar columnas", 
+            columnas_disponibles_eliminar,
+            default=st.session_state.columnas_eliminar,
+            key="multiselect_eliminar"
+        )
+
+        # --- BOTÓN PARA ELIMINAR COLUMNAS ---
+        if st.session_state.columnas_eliminar:
+            if st.sidebar.button("🗑️ Eliminar columnas seleccionadas", type="primary", use_container_width=True):
+                columnas_a_eliminar = st.session_state.columnas_eliminar.copy()
+                
+                # Verificar que las columnas existen antes de eliminarlas
+                columnas_existentes = [col for col in columnas_a_eliminar if col in st.session_state.processed_df.columns]
+                
+                if columnas_existentes:
+                    st.session_state.processed_df = st.session_state.processed_df.drop(columns=columnas_existentes)
+                    add_log(f"Columnas eliminadas: {', '.join(columnas_existentes)}")
+                    st.success(f"🗑️ Columnas eliminadas: {', '.join(columnas_existentes)}")
+                    
+                    # Actualizar las listas de selección
+                    st.session_state.columnas_protegidas = [p for p in st.session_state.columnas_protegidas if p not in columnas_existentes]
+                    st.session_state.columnas_eliminar = []
+                    
+                    st.rerun()
+                else:
+                    st.error("❌ Las columnas seleccionadas ya no existen en el dataset")
+                    st.session_state.columnas_eliminar = []
 
         # --- OPCIONES DE TRATAMIENTO ---
         st.sidebar.subheader("⚙️ Tratamientos disponibles")
@@ -499,6 +462,25 @@ if st.session_state.columnas_eliminar:
              "Rellenar nulos", "Eliminar acentos", "Texto a minúsculas", "Eliminar outliers"],
             key="multiselect_tratamientos"
         )
+
+        # --- BOTONES DE ACCIÓN ---
+        col1, col2 = st.sidebar.columns(2)
+        with col1:
+            if st.button("🚀 Iniciar tratamiento", use_container_width=True):
+                if opciones:
+                    nuevo_df = aplicar_tratamientos(
+                        st.session_state.processed_df, opciones, st.session_state.columnas_protegidas
+                    )
+                    if nuevo_df is not None:
+                        st.session_state.processed_df = nuevo_df
+                        st.rerun()
+                else:
+                    st.warning("⚠️ Selecciona al menos un tratamiento")
+        
+        with col2:
+            if st.button("🔄 Restaurar original", use_container_width=True):
+                restaurar_archivo()
+                st.rerun()
 
         # --- MOSTRAR DATOS PROCESADOS ---
         if st.session_state.transformations_applied:
