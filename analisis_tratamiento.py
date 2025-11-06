@@ -202,11 +202,14 @@ def aplicar_tratamientos(df, opciones, protegidas):
         df_tratado.drop_duplicates(inplace=True)
         add_log("Duplicados eliminados.")
 
-    # 2. Eliminar espacios
+    # 2. Eliminar espacios extra - CORREGIDO
     if "Eliminar espacios extra" in opciones:
         for col in df_tratado.select_dtypes(include="object"):
             if col not in protegidas:
-                df_tratado[col] = df_tratado[col].astype(str).str.strip()
+                # Aplicar strip() correctamente y manejar NaN
+                df_tratado[col] = df_tratado[col].apply(
+                    lambda x: x.strip() if isinstance(x, str) else x
+                )
         add_log("Espacios extra eliminados.")
 
     # 3. Normalizar encabezados
@@ -214,38 +217,50 @@ def aplicar_tratamientos(df, opciones, protegidas):
         df_tratado.columns = [unidecode(c.strip().lower().replace(" ", "_")) for c in df_tratado.columns]
         add_log("Encabezados normalizados.")
 
-    # 4. Rellenar valores nulos
+    # 4. Rellenar valores nulos - CORREGIDO para no afectar coordenadas
     if "Rellenar nulos" in opciones:
         for col in df_tratado.columns:
             if col not in protegidas:
-                if df_tratado[col].dtype == "O":
+                if df_tratado[col].dtype == "object":
                     df_tratado[col].fillna("N/A", inplace=True)
-                else:
-                    df_tratado[col].fillna(df_tratado[col].median(), inplace=True)
+                elif pd.api.types.is_numeric_dtype(df_tratado[col]):
+                    # Para columnas numéricas (como lat/long), usar median solo si es apropiado
+                    if not df_tratado[col].isna().all():  # Verificar que no todos sean NaN
+                        df_tratado[col].fillna(df_tratado[col].median(), inplace=True)
         add_log("Valores nulos rellenados.")
 
-    # 5. Eliminar acentos
+    # 5. Eliminar acentos - CORREGIDO
     if "Eliminar acentos" in opciones:
         for col in df_tratado.select_dtypes(include="object"):
             if col not in protegidas:
-                df_tratado[col] = df_tratado[col].apply(lambda x: unidecode(str(x)))
+                # Aplicar unidecode solo a strings, mantener otros tipos
+                df_tratado[col] = df_tratado[col].apply(
+                    lambda x: unidecode(str(x)) if isinstance(x, str) else x
+                )
         add_log("Acentos eliminados.")
 
-    # 6. Convertir texto a minúsculas
+    # 6. Convertir texto a minúsculas - CORREGIDO
     if "Texto a minúsculas" in opciones:
         for col in df_tratado.select_dtypes(include="object"):
             if col not in protegidas:
-                df_tratado[col] = df_tratado[col].str.lower()
+                # Aplicar lower() solo a strings
+                df_tratado[col] = df_tratado[col].apply(
+                    lambda x: x.lower() if isinstance(x, str) else x
+                )
         add_log("Texto convertido a minúsculas.")
 
-    # 7. Eliminar outliers (numéricos)
+    # 7. Eliminar outliers (numéricos) - CORREGIDO para proteger coordenadas
     if "Eliminar outliers" in opciones:
-        for col in df_tratado.select_dtypes(include=[np.number]):
+        columnas_numericas = df_tratado.select_dtypes(include=[np.number]).columns
+        for col in columnas_numericas:
             if col not in protegidas:
-                q1, q3 = df_tratado[col].quantile([0.25, 0.75])
-                iqr = q3 - q1
-                low, high = q1 - 1.5 * iqr, q3 + 1.5 * iqr
-                df_tratado = df_tratado[(df_tratado[col] >= low) & (df_tratado[col] <= high)]
+                # Verificar que la columna no sea de coordenadas por el nombre
+                if not any(term in col.lower() for term in ['lat', 'lon', 'long', 'latitude', 'longitude']):
+                    q1, q3 = df_tratado[col].quantile([0.25, 0.75])
+                    iqr = q3 - q1
+                    if iqr > 0:  # Solo aplicar si hay dispersión
+                        low, high = q1 - 1.5 * iqr, q3 + 1.5 * iqr
+                        df_tratado = df_tratado[(df_tratado[col] >= low) & (df_tratado[col] <= high)]
         add_log("Outliers eliminados.")
 
     add_log("Tratamiento de datos completado.")
