@@ -199,71 +199,111 @@ def aplicar_tratamientos(df, opciones, protegidas):
 
     # 1. Eliminar duplicados
     if "Eliminar duplicados" in opciones:
+        duplicados_antes = len(df_tratado)
         df_tratado.drop_duplicates(inplace=True)
-        add_log("Duplicados eliminados.")
+        duplicados_eliminados = duplicados_antes - len(df_tratado)
+        add_log(f"Duplicados eliminados: {duplicados_eliminados} registros.")
 
-    # 2. Eliminar espacios extra - CORREGIDO
+    # 2. Eliminar espacios extra
     if "Eliminar espacios extra" in opciones:
-        for col in df_tratado.select_dtypes(include="object"):
+        columnas_procesadas = 0
+        for col in df_tratado.select_dtypes(include=["object"]).columns:
             if col not in protegidas:
-                # Aplicar strip() correctamente y manejar NaN
+                # Aplicar strip() a todos los valores string de la columna
                 df_tratado[col] = df_tratado[col].apply(
-                    lambda x: x.strip() if isinstance(x, str) else x
+                    lambda x: x.strip() if isinstance(x, str) and x is not None else x
                 )
-        add_log("Espacios extra eliminados.")
+                columnas_procesadas += 1
+        add_log(f"Espacios extra eliminados en {columnas_procesadas} columnas.")
 
     # 3. Normalizar encabezados
     if "Normalizar encabezados" in opciones:
-        df_tratado.columns = [unidecode(c.strip().lower().replace(" ", "_")) for c in df_tratado.columns]
+        nuevos_nombres = {}
+        for col in df_tratado.columns:
+            nuevo_nombre = unidecode(str(col).strip().lower().replace(" ", "_").replace("-", "_"))
+            nuevos_nombres[col] = nuevo_nombre
+        df_tratado.rename(columns=nuevos_nombres, inplace=True)
         add_log("Encabezados normalizados.")
 
-    # 4. Rellenar valores nulos - CORREGIDO para no afectar coordenadas
+    # 4. Rellenar valores nulos - MEJORADO
     if "Rellenar nulos" in opciones:
+        nulos_rellenados = 0
         for col in df_tratado.columns:
             if col not in protegidas:
-                if df_tratado[col].dtype == "object":
-                    df_tratado[col].fillna("N/A", inplace=True)
-                elif pd.api.types.is_numeric_dtype(df_tratado[col]):
-                    # Para columnas numéricas (como lat/long), usar median solo si es apropiado
-                    if not df_tratado[col].isna().all():  # Verificar que no todos sean NaN
-                        df_tratado[col].fillna(df_tratado[col].median(), inplace=True)
-        add_log("Valores nulos rellenados.")
+                nulos_antes = df_tratado[col].isna().sum()
+                if nulos_antes > 0:
+                    if df_tratado[col].dtype == "object":
+                        df_tratado[col].fillna("N/A", inplace=True)
+                    elif pd.api.types.is_numeric_dtype(df_tratado[col]):
+                        # Para coordenadas, verificar por nombre de columna
+                        if any(term in col.lower() for term in ['lat', 'lon', 'long', 'latitude', 'longitude']):
+                            # Para coordenadas, usar 0 o mantener nulos
+                            df_tratado[col].fillna(0, inplace=True)
+                        else:
+                            df_tratado[col].fillna(df_tratado[col].median(), inplace=True)
+                    nulos_rellenados += nulos_antes
+        add_log(f"Valores nulos rellenados: {nulos_rellenados} valores.")
 
-    # 5. Eliminar acentos - CORREGIDO
+    # 5. Eliminar acentos
     if "Eliminar acentos" in opciones:
-        for col in df_tratado.select_dtypes(include="object"):
+        columnas_procesadas = 0
+        for col in df_tratado.select_dtypes(include=["object"]).columns:
             if col not in protegidas:
-                # Aplicar unidecode solo a strings, mantener otros tipos
+                # Aplicar unidecode a todos los valores string
                 df_tratado[col] = df_tratado[col].apply(
-                    lambda x: unidecode(str(x)) if isinstance(x, str) else x
+                    lambda x: unidecode(str(x)) if isinstance(x, str) and x is not None else x
                 )
-        add_log("Acentos eliminados.")
+                columnas_procesadas += 1
+        add_log(f"Acentos eliminados en {columnas_procesadas} columnas.")
 
     # 6. Convertir texto a minúsculas - CORREGIDO
     if "Texto a minúsculas" in opciones:
-        for col in df_tratado.select_dtypes(include="object"):
+        columnas_procesadas = 0
+        for col in df_tratado.select_dtypes(include=["object"]).columns:
             if col not in protegidas:
-                # Aplicar lower() solo a strings
+                # Aplicar lower() a todos los valores string
                 df_tratado[col] = df_tratado[col].apply(
-                    lambda x: x.lower() if isinstance(x, str) else x
+                    lambda x: x.lower() if isinstance(x, str) and x is not None else x
                 )
-        add_log("Texto convertido a minúsculas.")
+                columnas_procesadas += 1
+        add_log(f"Texto convertido a minúsculas en {columnas_procesadas} columnas.")
 
-    # 7. Eliminar outliers (numéricos) - CORREGIDO para proteger coordenadas
+    # 7. Eliminar outliers - MEJORADO
     if "Eliminar outliers" in opciones:
+        registros_antes = len(df_tratado)
         columnas_numericas = df_tratado.select_dtypes(include=[np.number]).columns
+        columnas_procesadas = 0
+        
         for col in columnas_numericas:
             if col not in protegidas:
-                # Verificar que la columna no sea de coordenadas por el nombre
+                # Excluir columnas que parecen coordenadas
                 if not any(term in col.lower() for term in ['lat', 'lon', 'long', 'latitude', 'longitude']):
-                    q1, q3 = df_tratado[col].quantile([0.25, 0.75])
-                    iqr = q3 - q1
-                    if iqr > 0:  # Solo aplicar si hay dispersión
-                        low, high = q1 - 1.5 * iqr, q3 + 1.5 * iqr
-                        df_tratado = df_tratado[(df_tratado[col] >= low) & (df_tratado[col] <= high)]
-        add_log("Outliers eliminados.")
+                    # Verificar que hay suficientes datos
+                    if len(df_tratado[col].dropna()) > 10:
+                        q1 = df_tratado[col].quantile(0.25)
+                        q3 = df_tratado[col].quantile(0.75)
+                        iqr = q3 - q1
+                        if iqr > 0:
+                            low = q1 - 1.5 * iqr
+                            high = q3 + 1.5 * iqr
+                            mask = (df_tratado[col] >= low) & (df_tratado[col] <= high)
+                            df_tratado = df_tratado[mask | df_tratado[col].isna()]
+                            columnas_procesadas += 1
+        
+        registros_eliminados = registros_antes - len(df_tratado)
+        add_log(f"Outliers eliminados: {registros_eliminados} registros en {columnas_procesadas} columnas.")
 
     add_log("Tratamiento de datos completado.")
+    
+    # Mostrar resumen de cambios
+    cambios_info = f"""
+    **📊 Resumen del tratamiento:**
+    - Registros finales: {len(df_tratado)}
+    - Columnas finales: {len(df_tratado.columns)}
+    - Tratamientos aplicados: {len(opciones)}
+    """
+    st.info(cambios_info)
+    
     st.success("✅ Tratamiento completado con éxito.")
     return df_tratado
 
