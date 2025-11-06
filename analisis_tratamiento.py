@@ -66,6 +66,8 @@ if "processed_df" not in st.session_state:
     st.session_state.processed_df = None
 if "log" not in st.session_state:
     st.session_state.log = []
+if "transformations_applied" not in st.session_state:
+    st.session_state.transformations_applied = False
 
 # --- FUNCIÓN DE LOG ---
 def add_log(message):
@@ -75,24 +77,35 @@ def add_log(message):
 # --- FUNCIÓN DE CARGA ---
 def cargar_archivo(archivo):
     extension = archivo.name.split(".")[-1].lower()
-    if extension in ["xlsx", "xls"]:
-        df = pd.read_excel(archivo)
-    elif extension == "csv":
-        df = pd.read_csv(archivo)
-    elif extension == "txt":
-        df = pd.read_csv(archivo, delimiter="\t")
-    elif extension == "ods":
-        df = pd.read_excel(archivo, engine="odf")
-    else:
-        st.error("⚠️ Formato no soportado.")
+    try:
+        if extension in ["xlsx", "xls"]:
+            df = pd.read_excel(archivo)
+        elif extension == "csv":
+            df = pd.read_csv(archivo)
+        elif extension == "txt":
+            df = pd.read_csv(archivo, delimiter="\t")
+        elif extension == "ods":
+            df = pd.read_excel(archivo, engine="odf")
+        else:
+            st.error("⚠️ Formato no soportado.")
+            return None
+        
+        # Verificar que el DataFrame no esté vacío
+        if df.empty:
+            st.error("⚠️ El archivo está vacío.")
+            return None
+            
+        add_log(f"Archivo cargado: {archivo.name} - {len(df)} registros, {len(df.columns)} columnas")
+        return df
+    except Exception as e:
+        st.error(f"⚠️ Error al cargar archivo: {e}")
         return None
-    add_log(f"Archivo cargado: {archivo.name}")
-    return df
 
 # --- FUNCIÓN DE RESTAURACIÓN ---
 def restaurar_archivo():
     if st.session_state.original_df is not None:
         st.session_state.processed_df = st.session_state.original_df.copy()
+        st.session_state.transformations_applied = False
         add_log("Archivo restaurado al estado original.")
         st.success("✅ Archivo restaurado exitosamente.")
     else:
@@ -192,39 +205,84 @@ def aplicar_filtro_fechas_descarga(df, fecha_columna, filtro_tipo, año=None, me
     df_filtrado = df_filtrado.drop(columns=['fecha_temporal'])
     return df_filtrado
 
-# --- FUNCIONES DE TRATAMIENTO COMPLETAMENTE CORREGIDAS ---
+# --- FUNCIÓN DE VERIFICACIÓN DE TRANSFORMACIONES ---
+def verificar_transformaciones(df_original, df_procesado, tratamiento):
+    """Verifica que las transformaciones se aplicaron correctamente"""
+    
+    cambios_detectados = []
+    
+    if tratamiento == "Eliminar espacios extra":
+        for col in df_procesado.select_dtypes(include=["object"]).columns:
+            if col in df_original.columns:
+                # Verificar espacios al inicio y final
+                original_con_espacios = df_original[col].astype(str).apply(
+                    lambda x: x != x.strip() if isinstance(x, str) else False
+                ).any()
+                
+                procesado_con_espacios = df_procesado[col].astype(str).apply(
+                    lambda x: x != x.strip() if isinstance(x, str) else False
+                ).any()
+                
+                if original_con_espacios and not procesado_con_espacios:
+                    cambios_detectados.append(f"✅ Espacios eliminados en columna '{col}'")
+                elif original_con_espacios and procesado_con_espacios:
+                    cambios_detectados.append(f"❌ Espacios NO eliminados en columna '{col}'")
+    
+    elif tratamiento == "Eliminar acentos":
+        for col in df_procesado.select_dtypes(include=["object"]).columns:
+            if col in df_original.columns:
+                # Verificar si hay acentos (simplificado)
+                original_str = df_original[col].astype(str).str.cat()
+                procesado_str = df_procesado[col].astype(str).str.cat()
+                
+                if original_str != procesado_str:
+                    cambios_detectados.append(f"✅ Cambios detectados en columna '{col}'")
+    
+    return cambios_detectados
+
+# --- FUNCIONES DE TRATAMIENTO COMPLETAMENTE REESCRITAS ---
 def aplicar_tratamientos(df, opciones, protegidas):
+    """Aplica tratamientos de manera más robusta y verificable"""
+    
+    if df is None or df.empty:
+        st.error("❌ No hay datos para procesar")
+        return df
+        
     df_tratado = df.copy()
     add_log("Inicio de tratamiento de datos...")
-
+    
+    # Crear bandera para verificar cambios
+    cambios_realizados = False
+    
     # 1. Eliminar duplicados
     if "Eliminar duplicados" in opciones:
-        duplicados_antes = len(df_tratado)
-        df_tratado.drop_duplicates(inplace=True)
-        duplicados_eliminados = duplicados_antes - len(df_tratado)
-        add_log(f"Duplicados eliminados: {duplicados_eliminados} registros.")
+        registros_antes = len(df_tratado)
+        df_tratado = df_tratado.drop_duplicates()
+        registros_despues = len(df_tratado)
+        if registros_despues < registros_antes:
+            cambios_realizados = True
+            add_log(f"Duplicados eliminados: {registros_antes - registros_despues} registros removidos")
 
-    # 2. Eliminar espacios extra - ENFOQUE COMPLETAMENTE NUEVO
+    # 2. Eliminar espacios extra - ENFOQUE MÁS AGRESIVO
     if "Eliminar espacios extra" in opciones:
-        columnas_procesadas = 0
-        for col in df_tratado.select_dtypes(include=["object"]).columns:
-            if col not in protegidas:
-                # ENFOQUE DIRECTO Y ROBUSTO
-                # Primero asegurarnos de que todos los valores sean strings
-                df_tratado[col] = df_tratado[col].astype(str)
-                # Aplicar strip() directamente a toda la serie
-                df_tratado[col] = df_tratado[col].str.strip()
-                # También eliminar múltiples espacios internos si es necesario
-                df_tratado[col] = df_tratado[col].str.replace(r'\s+', ' ', regex=True)
-                columnas_procesadas += 1
+        columnas_procesadas = []
+        for col in df_tratado.columns:
+            if col not in protegidas and df_tratado[col].dtype == 'object':
+                # Guardar estado antes
+                antes = df_tratado[col].copy()
                 
-                # VERIFICACIÓN EN TIEMPO REAL - mostrar ejemplos
-                if len(df_tratado) > 0:
-                    ejemplo = df_tratado[col].iloc[0]
-                    # Mostrar el primer ejemplo para verificar
-                    if columnas_procesadas == 1:  # Solo para la primera columna procesada
-                        st.sidebar.info(f"🔍 Ejemplo columna '{col}': '{ejemplo}'")
-        add_log(f"Espacios extra eliminados en {columnas_procesadas} columnas.")
+                # Aplicar transformación de manera más agresiva
+                df_tratado[col] = df_tratado[col].astype(str)
+                df_tratado[col] = df_tratado[col].str.strip()
+                df_tratado[col] = df_tratado[col].str.replace(r'\s+', ' ', regex=True)
+                
+                # Verificar si hubo cambios
+                if not antes.equals(df_tratado[col]):
+                    columnas_procesadas.append(col)
+                    cambios_realizados = True
+        
+        if columnas_procesadas:
+            add_log(f"Espacios extra eliminados en columnas: {', '.join(columnas_procesadas)}")
 
     # 3. Normalizar encabezados
     if "Normalizar encabezados" in opciones:
@@ -232,10 +290,12 @@ def aplicar_tratamientos(df, opciones, protegidas):
         for col in df_tratado.columns:
             nuevo_nombre = unidecode(str(col).strip().lower().replace(" ", "_").replace("-", "_"))
             nuevos_nombres[col] = nuevo_nombre
+        
         df_tratado.rename(columns=nuevos_nombres, inplace=True)
+        cambios_realizados = True
         add_log("Encabezados normalizados.")
 
-    # 4. Rellenar valores nulos - MEJORADO
+    # 4. Rellenar valores nulos
     if "Rellenar nulos" in opciones:
         nulos_rellenados = 0
         for col in df_tratado.columns:
@@ -245,47 +305,62 @@ def aplicar_tratamientos(df, opciones, protegidas):
                     if df_tratado[col].dtype == "object":
                         df_tratado[col].fillna("N/A", inplace=True)
                     elif pd.api.types.is_numeric_dtype(df_tratado[col]):
-                        # Para coordenadas, verificar por nombre de columna
+                        # Para coordenadas, usar 0
                         if any(term in col.lower() for term in ['lat', 'lon', 'long', 'latitude', 'longitude']):
-                            # Para coordenadas, usar 0 o mantener nulos
                             df_tratado[col].fillna(0, inplace=True)
                         else:
                             df_tratado[col].fillna(df_tratado[col].median(), inplace=True)
                     nulos_rellenados += nulos_antes
-        add_log(f"Valores nulos rellenados: {nulos_rellenados} valores.")
+                    cambios_realizados = True
+        
+        if nulos_rellenados > 0:
+            add_log(f"Valores nulos rellenados: {nulos_rellenados} valores.")
 
-    # 5. Eliminar acentos - ENFOQUE MÁS ROBUSTO
+    # 5. Eliminar acentos - ENFOQUE MÁS DIRECTIVO
     if "Eliminar acentos" in opciones:
-        columnas_procesadas = 0
-        for col in df_tratado.select_dtypes(include=["object"]).columns:
-            if col not in protegidas:
-                # Asegurar que todos sean strings
-                df_tratado[col] = df_tratado[col].astype(str)
-                # Aplicar unidecode directamente a toda la serie
-                df_tratado[col] = df_tratado[col].apply(unidecode)
-                columnas_procesadas += 1
+        columnas_procesadas = []
+        for col in df_tratado.columns:
+            if col not in protegidas and df_tratado[col].dtype == 'object':
+                # Guardar estado antes
+                antes = df_tratado[col].copy()
                 
-                # VERIFICACIÓN EN TIEMPO REAL
-                if len(df_tratado) > 0 and columnas_procesadas == 1:
-                    ejemplo = df_tratado[col].iloc[0]
-                    st.sidebar.info(f"🔍 Ejemplo sin acentos '{col}': '{ejemplo}'")
-        add_log(f"Acentos eliminados en {columnas_procesadas} columnas.")
+                # Aplicar unidecode directamente
+                df_tratado[col] = df_tratado[col].astype(str)
+                df_tratado[col] = df_tratado[col].apply(lambda x: unidecode(x))
+                
+                # Verificar si hubo cambios
+                if not antes.equals(df_tratado[col]):
+                    columnas_procesadas.append(col)
+                    cambios_realizados = True
+        
+        if columnas_procesadas:
+            add_log(f"Acentos eliminados en columnas: {', '.join(columnas_procesadas)}")
 
-    # 6. Convertir texto a minúsculas - ENFOQUE DIRECTO
+    # 6. Convertir texto a minúsculas
     if "Texto a minúsculas" in opciones:
-        columnas_procesadas = 0
-        for col in df_tratado.select_dtypes(include=["object"]).columns:
-            if col not in protegidas:
-                # Aplicar lower() directamente a toda la serie
+        columnas_procesadas = []
+        for col in df_tratado.columns:
+            if col not in protegidas and df_tratado[col].dtype == 'object':
+                # Guardar estado antes
+                antes = df_tratado[col].copy()
+                
+                # Aplicar lowercase
+                df_tratado[col] = df_tratado[col].astype(str)
                 df_tratado[col] = df_tratado[col].str.lower()
-                columnas_procesadas += 1
-        add_log(f"Texto convertido a minúsculas en {columnas_procesadas} columnas.")
+                
+                # Verificar si hubo cambios
+                if not antes.equals(df_tratado[col]):
+                    columnas_procesadas.append(col)
+                    cambios_realizados = True
+        
+        if columnas_procesadas:
+            add_log(f"Texto convertido a minúsculas en columnas: {', '.join(columnas_procesadas)}")
 
-    # 7. Eliminar outliers - MEJORADO
+    # 7. Eliminar outliers
     if "Eliminar outliers" in opciones:
         registros_antes = len(df_tratado)
         columnas_numericas = df_tratado.select_dtypes(include=[np.number]).columns
-        columnas_procesadas = 0
+        columnas_procesadas = []
         
         for col in columnas_numericas:
             if col not in protegidas:
@@ -301,23 +376,34 @@ def aplicar_tratamientos(df, opciones, protegidas):
                             high = q3 + 1.5 * iqr
                             mask = (df_tratado[col] >= low) & (df_tratado[col] <= high)
                             df_tratado = df_tratado[mask | df_tratado[col].isna()]
-                            columnas_procesadas += 1
+                            columnas_procesadas.append(col)
+                            cambios_realizados = True
         
         registros_eliminados = registros_antes - len(df_tratado)
-        add_log(f"Outliers eliminados: {registros_eliminados} registros en {columnas_procesadas} columnas.")
+        if registros_eliminados > 0:
+            add_log(f"Outliers eliminados: {registros_eliminados} registros en {len(columnas_procesadas)} columnas")
 
-    add_log("Tratamiento de datos completado.")
-    
-    # Mostrar resumen de cambios
-    cambios_info = f"""
-    **📊 Resumen del tratamiento:**
-    - Registros finales: {len(df_tratado)}
-    - Columnas finales: {len(df_tratado.columns)}
-    - Tratamientos aplicados: {len(opciones)}
-    """
-    st.info(cambios_info)
-    
-    st.success("✅ Tratamiento completado con éxito.")
+    if cambios_realizados:
+        add_log("Tratamiento de datos completado con cambios.")
+        st.session_state.transformations_applied = True
+        st.success("✅ Tratamiento completado con éxito.")
+        
+        # Mostrar resumen
+        with st.expander("📊 Resumen de cambios aplicados"):
+            st.write(f"**Registros finales:** {len(df_tratado)}")
+            st.write(f"**Columnas finales:** {len(df_tratado.columns)}")
+            st.write(f"**Tratamientos aplicados:** {len(opciones)}")
+            
+            # Verificación específica de espacios
+            if "Eliminar espacios extra" in opciones:
+                st.write("**Verificación de espacios:**")
+                for col in df_tratado.select_dtypes(include=["object"]).columns[:3]:  # Mostrar solo 3 columnas
+                    if len(df_tratado) > 0:
+                        ejemplo = df_tratado[col].iloc[0]
+                        st.write(f"- '{col}': '{ejemplo}'")
+    else:
+        st.info("ℹ️ No se detectaron cambios después del tratamiento.")
+
     return df_tratado
 
 # --- INTERFAZ PRINCIPAL ---
@@ -328,23 +414,38 @@ archivo = st.sidebar.file_uploader("📂 Cargar archivo", type=["xlsx", "xls", "
 if archivo:
     df = cargar_archivo(archivo)
     if df is not None:
-        st.session_state.original_df = df.copy()
-        st.session_state.processed_df = df.copy()
+        # Solo actualizar si es la primera carga o si se restauró
+        if st.session_state.original_df is None:
+            st.session_state.original_df = df.copy()
+            st.session_state.processed_df = df.copy()
+            st.session_state.transformations_applied = False
 
-        st.subheader("👁️ Vista preliminar del archivo")
-        st.dataframe(df.head(10), use_container_width=True)
+        st.subheader("👁️ Vista preliminar del archivo original")
+        st.dataframe(st.session_state.original_df.head(10), use_container_width=True)
+        
+        # Mostrar información del dataset
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            st.metric("Registros", len(st.session_state.original_df))
+        with col2:
+            st.metric("Columnas", len(st.session_state.original_df.columns))
+        with col3:
+            st.metric("Transformaciones aplicadas", 
+                     "Sí" if st.session_state.transformations_applied else "No")
 
         # --- OPCIONES DE PROCESAMIENTO ---
-        columnas = list(df.columns)
+        columnas = list(st.session_state.processed_df.columns)
         st.sidebar.subheader("🛡️ Protección y eliminación")
         protegidas = st.sidebar.multiselect("Seleccionar columnas protegidas", columnas)
         eliminar = st.sidebar.multiselect("Eliminar columnas", [c for c in columnas if c not in protegidas])
 
         # --- ELIMINACIÓN DE COLUMNAS ---
         if eliminar:
-            st.session_state.processed_df.drop(columns=eliminar, inplace=True)
+            st.session_state.processed_df = st.session_state.processed_df.drop(columns=eliminar)
             add_log(f"Columnas eliminadas: {', '.join(eliminar)}")
             st.success(f"🗑️ Columnas eliminadas: {', '.join(eliminar)}")
+            # Actualizar la lista de columnas protegidas
+            protegidas = [p for p in protegidas if p not in eliminar]
 
         # --- OPCIONES DE TRATAMIENTO ---
         st.sidebar.subheader("⚙️ Tratamientos disponibles")
@@ -355,30 +456,61 @@ if archivo:
         )
 
         # --- BOTONES DE ACCIÓN ---
-        if st.sidebar.button("🚀 Iniciar tratamiento"):
-            st.session_state.processed_df = aplicar_tratamientos(
-                st.session_state.processed_df, opciones, protegidas
-            )
+        col1, col2 = st.sidebar.columns(2)
+        with col1:
+            if st.button("🚀 Iniciar tratamiento", use_container_width=True):
+                if opciones:
+                    nuevo_df = aplicar_tratamientos(
+                        st.session_state.processed_df, opciones, protegidas
+                    )
+                    # ACTUALIZAR EL ESTADO CORRECTAMENTE
+                    if nuevo_df is not None:
+                        st.session_state.processed_df = nuevo_df
+                        st.rerun()  # Forzar actualización de la UI
+                else:
+                    st.warning("⚠️ Selecciona al menos un tratamiento")
+        
+        with col2:
+            if st.button("🔄 Restaurar original", use_container_width=True):
+                restaurar_archivo()
+                st.rerun()
 
-        if st.sidebar.button("🔄 Restaurar archivo original"):
-            restaurar_archivo()
+        # --- MOSTRAR DATOS PROCESADOS ---
+        if st.session_state.transformations_applied:
+            st.subheader("📊 Vista de datos procesados")
+            st.dataframe(st.session_state.processed_df.head(10), use_container_width=True)
+            
+            # Mostrar diferencias
+            st.subheader("🔍 Comparación de cambios")
+            col1, col2 = st.columns(2)
+            with col1:
+                st.write("**Original**")
+                st.write(f"- Registros: {len(st.session_state.original_df)}")
+                st.write(f"- Columnas: {len(st.session_state.original_df.columns)}")
+            
+            with col2:
+                st.write("**Procesado**")
+                st.write(f"- Registros: {len(st.session_state.processed_df)}")
+                st.write(f"- Columnas: {len(st.session_state.processed_df.columns)}")
 
-        # --- SECCIÓN DE DESCARGA CON FILTRO DE FECHAS INTEGRADO ---
+        # --- SECCIÓN DE DESCARGA MEJORADA ---
+        st.sidebar.markdown("---")
         st.sidebar.subheader("📤 Exportar resultados")
         
-        if st.session_state.processed_df is not None:
-            # Mostrar información general
+        if st.session_state.processed_df is not None and not st.session_state.processed_df.empty:
+            # Información general
             total_registros = len(st.session_state.processed_df)
-            st.sidebar.info(f"📊 Total de registros procesados: {total_registros}")
+            st.sidebar.info(f"📊 Registros listos: {total_registros}")
             
             # Opciones de formato
-            formato = st.sidebar.selectbox("Formato de exportación", ["xlsx", "csv", "json", "parquet"])
+            formato = st.sidebar.selectbox("Formato de exportación", ["xlsx", "csv", "json"])
             
-            # Opción de filtro para descarga
+            # Filtro para descarga
             st.sidebar.subheader("📅 Filtro para descarga")
             aplicar_filtro = st.sidebar.radio(
-                "¿Deseas aplicar filtro de fechas?",
-                ["Descargar sin filtro", "Aplicar filtro de fechas"]
+                "Filtro de fechas:",
+                ["Descargar sin filtro", "Aplicar filtro de fechas"],
+                index=0
             )
             
             df_para_descargar = st.session_state.processed_df.copy()
@@ -387,30 +519,20 @@ if archivo:
             if aplicar_filtro == "Aplicar filtro de fechas":
                 # Selección de columna de fecha
                 fecha_columna = st.sidebar.selectbox(
-                    "Seleccionar columna de fecha:",
+                    "Columna de fecha:",
                     st.session_state.processed_df.columns,
                     help="Selecciona la columna que contiene las fechas"
                 )
                 
                 if fecha_columna:
-                    # Mostrar información de fechas
                     info_fechas, invalidas = mostrar_info_fechas(st.session_state.processed_df, fecha_columna)
                     st.sidebar.info(info_fechas)
                     
-                    # Tipo de filtro
-                    filtro_tipo = st.sidebar.selectbox(
-                        "Tipo de filtro:",
-                        ["año", "mes", "rango"],
-                        help="Selecciona el tipo de filtro a aplicar"
-                    )
+                    filtro_tipo = st.sidebar.selectbox("Tipo de filtro:", ["año", "mes", "rango"])
                     
-                    año = None
-                    mes = None
-                    fecha_inicio = None
-                    fecha_fin = None
+                    año, mes, fecha_inicio, fecha_fin = None, None, None, None
                     
                     if filtro_tipo == "año":
-                        # Obtener años disponibles
                         try:
                             df_temp = st.session_state.processed_df.copy()
                             df_temp['fecha_temp'] = pd.to_datetime(df_temp[fecha_columna], errors='coerce')
@@ -418,17 +540,11 @@ if archivo:
                             años_disponibles = sorted(df_temp['fecha_temp'].dt.year.dropna().unique())
                             if años_disponibles:
                                 año = st.sidebar.selectbox("Seleccionar año:", años_disponibles)
-                            else:
-                                st.sidebar.warning("No se pudieron obtener años válidos")
-                        except Exception as e:
-                            st.sidebar.warning(f"No se pueden obtener años: {e}")
+                        except:
+                            st.sidebar.warning("No se pudieron obtener años")
                     
                     elif filtro_tipo == "mes":
-                        mes = st.sidebar.selectbox(
-                            "Seleccionar mes:",
-                            range(1, 13),
-                            format_func=lambda x: datetime(2023, x, 1).strftime("%B")
-                        )
+                        mes = st.sidebar.selectbox("Mes:", range(1, 13), format_func=lambda x: datetime(2023, x, 1).strftime("%B"))
                     
                     elif filtro_tipo == "rango":
                         col1, col2 = st.sidebar.columns(2)
@@ -437,78 +553,77 @@ if archivo:
                         with col2:
                             fecha_fin = st.date_input("Fecha fin:")
                     
-                    # Aplicar filtro para la descarga
                     if año or mes or (fecha_inicio and fecha_fin):
                         df_para_descargar = aplicar_filtro_fechas_descarga(
-                            st.session_state.processed_df,
-                            fecha_columna,
-                            filtro_tipo,
-                            año,
-                            mes,
-                            fecha_inicio,
-                            fecha_fin
+                            st.session_state.processed_df, fecha_columna, filtro_tipo, año, mes, fecha_inicio, fecha_fin
                         )
-                        mensaje_descarga = f"Descargando {len(df_para_descargar)} registros (con filtro aplicado)"
+                        mensaje_descarga = f"Descargando {len(df_para_descargar)} registros (filtrados)"
             
             # Botón de descarga
             st.sidebar.markdown("---")
             st.sidebar.info(mensaje_descarga)
             
-            if st.sidebar.button("💾 Generar archivo para descarga"):
+            if st.sidebar.button("💾 Generar archivo para descarga", use_container_width=True):
                 if len(df_para_descargar) > 0:
                     buffer = io.BytesIO()
                     
-                    if formato == "xlsx":
-                        df_para_descargar.to_excel(buffer, index=False)
-                        mime = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-                        filename = "datos_procesados.xlsx"
-                    elif formato == "csv":
-                        df_para_descargar.to_csv(buffer, index=False)
-                        mime = "text/csv"
-                        filename = "datos_procesados.csv"
-                    elif formato == "json":
-                        df_para_descargar.to_json(buffer, orient="records")
-                        mime = "application/json"
-                        filename = "datos_procesados.json"
-                    else:
-                        df_para_descargar.to_parquet(buffer, index=False)
-                        mime = "application/octet-stream"
-                        filename = "datos_procesados.parquet"
-
-                    # Crear el botón de descarga
-                    st.sidebar.download_button(
-                        label="⬇️ Descargar archivo",
-                        data=buffer.getvalue(),
-                        file_name=filename,
-                        mime=mime,
-                        key="descarga_principal"
-                    )
-                    
-                    # Registrar en el log
-                    if aplicar_filtro == "Aplicar filtro de fechas":
-                        add_log(f"Archivo exportado como {formato} con {len(df_para_descargar)} registros (filtro aplicado)")
-                    else:
-                        add_log(f"Archivo exportado como {formato} con {len(df_para_descargar)} registros")
+                    try:
+                        if formato == "xlsx":
+                            with pd.ExcelWriter(buffer, engine='openpyxl') as writer:
+                                df_para_descargar.to_excel(writer, index=False, sheet_name='Datos_Procesados')
+                            mime = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                            filename = "datos_procesados.xlsx"
+                        elif formato == "csv":
+                            df_para_descargar.to_csv(buffer, index=False, encoding='utf-8')
+                            mime = "text/csv"
+                            filename = "datos_procesados.csv"
+                        elif formato == "json":
+                            df_para_descargar.to_json(buffer, orient="records", force_ascii=False)
+                            mime = "application/json"
+                            filename = "datos_procesados.json"
+                        
+                        buffer.seek(0)
+                        
+                        # Crear el botón de descarga
+                        st.sidebar.download_button(
+                            label="⬇️ Descargar archivo",
+                            data=buffer.getvalue(),
+                            file_name=filename,
+                            mime=mime,
+                            use_container_width=True
+                        )
+                        
+                        # Registrar en el log
+                        if aplicar_filtro == "Aplicar filtro de fechas":
+                            add_log(f"Archivo exportado como {formato} con {len(df_para_descargar)} registros (filtrado)")
+                        else:
+                            add_log(f"Archivo exportado como {formato} con {len(df_para_descargar)} registros")
+                            
+                    except Exception as e:
+                        st.sidebar.error(f"❌ Error al generar archivo: {e}")
                 else:
                     st.sidebar.error("❌ No hay datos para descargar")
 
         # --- DESCARGA DEL LOG ---
         st.sidebar.subheader("📝 Registro de operaciones")
-        if st.sidebar.button("🧾 Descargar log de operaciones"):
-            log_txt = "\n".join(st.session_state.log)
-            st.sidebar.download_button(
-                "⬇️ Descargar log",
-                data=log_txt,
-                file_name="registro_operaciones.txt",
-                mime="text/plain"
-            )
+        if st.session_state.log:
+            if st.sidebar.button("🧾 Descargar log de operaciones", use_container_width=True):
+                log_txt = "\n".join(st.session_state.log)
+                st.sidebar.download_button(
+                    "⬇️ Descargar log",
+                    data=log_txt,
+                    file_name="registro_operaciones.txt",
+                    mime="text/plain",
+                    use_container_width=True
+                )
 
         # --- BOTÓN MENÚ PRINCIPAL ---
-        if st.sidebar.button("🏠 Volver al menú principal"):
+        if st.sidebar.button("🏠 Volver al menú principal", use_container_width=True):
             st.session_state.original_df = None
             st.session_state.processed_df = None
             st.session_state.log = []
-            st.experimental_rerun()
+            st.session_state.transformations_applied = False
+            st.rerun()
 
 else:
     st.info("👈 Carga un archivo para comenzar el tratamiento de datos.")
