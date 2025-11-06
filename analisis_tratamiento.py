@@ -192,7 +192,7 @@ def aplicar_filtro_fechas_descarga(df, fecha_columna, filtro_tipo, año=None, me
     df_filtrado = df_filtrado.drop(columns=['fecha_temporal'])
     return df_filtrado
 
-# --- FUNCIONES DE TRATAMIENTO ---
+# --- FUNCIONES DE TRATAMIENTO COMPLETAMENTE CORREGIDAS ---
 def aplicar_tratamientos(df, opciones, protegidas):
     df_tratado = df.copy()
     add_log("Inicio de tratamiento de datos...")
@@ -204,16 +204,26 @@ def aplicar_tratamientos(df, opciones, protegidas):
         duplicados_eliminados = duplicados_antes - len(df_tratado)
         add_log(f"Duplicados eliminados: {duplicados_eliminados} registros.")
 
-    # 2. Eliminar espacios extra
+    # 2. Eliminar espacios extra - ENFOQUE COMPLETAMENTE NUEVO
     if "Eliminar espacios extra" in opciones:
         columnas_procesadas = 0
         for col in df_tratado.select_dtypes(include=["object"]).columns:
             if col not in protegidas:
-                # Aplicar strip() a todos los valores string de la columna
-                df_tratado[col] = df_tratado[col].apply(
-                    lambda x: x.strip() if isinstance(x, str) and x is not None else x
-                )
+                # ENFOQUE DIRECTO Y ROBUSTO
+                # Primero asegurarnos de que todos los valores sean strings
+                df_tratado[col] = df_tratado[col].astype(str)
+                # Aplicar strip() directamente a toda la serie
+                df_tratado[col] = df_tratado[col].str.strip()
+                # También eliminar múltiples espacios internos si es necesario
+                df_tratado[col] = df_tratado[col].str.replace(r'\s+', ' ', regex=True)
                 columnas_procesadas += 1
+                
+                # VERIFICACIÓN EN TIEMPO REAL - mostrar ejemplos
+                if len(df_tratado) > 0:
+                    ejemplo = df_tratado[col].iloc[0]
+                    # Mostrar el primer ejemplo para verificar
+                    if columnas_procesadas == 1:  # Solo para la primera columna procesada
+                        st.sidebar.info(f"🔍 Ejemplo columna '{col}': '{ejemplo}'")
         add_log(f"Espacios extra eliminados en {columnas_procesadas} columnas.")
 
     # 3. Normalizar encabezados
@@ -244,27 +254,30 @@ def aplicar_tratamientos(df, opciones, protegidas):
                     nulos_rellenados += nulos_antes
         add_log(f"Valores nulos rellenados: {nulos_rellenados} valores.")
 
-    # 5. Eliminar acentos
+    # 5. Eliminar acentos - ENFOQUE MÁS ROBUSTO
     if "Eliminar acentos" in opciones:
         columnas_procesadas = 0
         for col in df_tratado.select_dtypes(include=["object"]).columns:
             if col not in protegidas:
-                # Aplicar unidecode a todos los valores string
-                df_tratado[col] = df_tratado[col].apply(
-                    lambda x: unidecode(str(x)) if isinstance(x, str) and x is not None else x
-                )
+                # Asegurar que todos sean strings
+                df_tratado[col] = df_tratado[col].astype(str)
+                # Aplicar unidecode directamente a toda la serie
+                df_tratado[col] = df_tratado[col].apply(unidecode)
                 columnas_procesadas += 1
+                
+                # VERIFICACIÓN EN TIEMPO REAL
+                if len(df_tratado) > 0 and columnas_procesadas == 1:
+                    ejemplo = df_tratado[col].iloc[0]
+                    st.sidebar.info(f"🔍 Ejemplo sin acentos '{col}': '{ejemplo}'")
         add_log(f"Acentos eliminados en {columnas_procesadas} columnas.")
 
-    # 6. Convertir texto a minúsculas - CORREGIDO
+    # 6. Convertir texto a minúsculas - ENFOQUE DIRECTO
     if "Texto a minúsculas" in opciones:
         columnas_procesadas = 0
         for col in df_tratado.select_dtypes(include=["object"]).columns:
             if col not in protegidas:
-                # Aplicar lower() a todos los valores string
-                df_tratado[col] = df_tratado[col].apply(
-                    lambda x: x.lower() if isinstance(x, str) and x is not None else x
-                )
+                # Aplicar lower() directamente a toda la serie
+                df_tratado[col] = df_tratado[col].str.lower()
                 columnas_procesadas += 1
         add_log(f"Texto convertido a minúsculas en {columnas_procesadas} columnas.")
 
