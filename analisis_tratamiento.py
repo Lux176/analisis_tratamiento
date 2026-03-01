@@ -378,7 +378,7 @@ def aplicar_tratamientos(df, opciones, protegidas):
     return df_tratado
 
 # --- INTERFAZ PRINCIPAL ---
-st.title("🧠 Entorno de Tratamiento de Datos Profesional")
+st.title("🧠 Entorno de Tratamiento de Datos")
 
 archivo = st.sidebar.file_uploader("📂 Cargar archivo", type=["xlsx", "xls", "csv", "txt", "ods"])
 
